@@ -32,6 +32,7 @@ def main():
     p.add_argument("--out", default="binder.pdb", help="Output PDB path")
     p.add_argument("--weights", default=None, help="Directory with .eqx weight files (default: auto-download from HuggingFace)")
     p.add_argument("--hotspots", default=None, help="Comma-separated 1-indexed residue numbers for hotspots (e.g. 8,44,68,70)")
+    p.add_argument("--batch", type=int, default=1, help="Number of designs to generate in parallel")
     p.add_argument("--no-self-cond", action="store_true", help="Disable self-conditioning")
     args = p.parse_args()
 
@@ -53,9 +54,8 @@ def main():
     decoder = load_decoder(**kwargs)
     print(f"  Loaded in {time.perf_counter() - t0:.1f}s")
 
-    B = 1
     LATENT_DIM = 8
-    mask = jnp.ones((B, args.length), dtype=jnp.bool_)
+    mask = jnp.ones(args.length, dtype=jnp.bool_)
 
     # Hotspot mask: sparse (matching training distribution of 0-6 hotspots)
     hotspot_mask = np.zeros(n_target, dtype=bool)
@@ -69,56 +69,66 @@ def main():
         print(f"  Hotspots: none (use --hotspots to specify)")
 
     target = TargetCond(
-        coords=jnp.array(target_nm)[None],
-        atom_mask=jnp.array(target_amask)[None],
-        seq=jnp.array(target_seq)[None],
-        seq_mask=jnp.ones((B, n_target), dtype=jnp.bool_),
-        hotspot_mask=jnp.array(hotspot_mask)[None],
-        sidechain_feat=jnp.array(target_sc)[None],
-        torsion_feat=jnp.array(target_tor)[None],
+        coords=jnp.array(target_nm),
+        atom_mask=jnp.array(target_amask),
+        seq=jnp.array(target_seq),
+        seq_mask=jnp.ones(n_target, dtype=jnp.bool_),
+        hotspot_mask=jnp.array(hotspot_mask),
+        sidechain_feat=jnp.array(target_sc),
+        torsion_feat=jnp.array(target_tor),
     )
 
-    print(f"Generating {args.length}-residue binder ({args.steps} steps, seed={args.seed})...")
+    def _run_single(denoiser, decoder, key):
+        x_bb, x_lat = generate(
+            model=denoiser, mask=mask, n_residues=args.length, latent_dim=LATENT_DIM,
+            key=key, nsteps=args.steps, self_cond=not args.no_self_cond, target=target,
+        )
+        dec_out = decoder(DecoderBatch(z_latent=x_lat, ca_coors_nm=x_bb, mask=mask))
+        return x_bb, dec_out
+
+    B = args.batch
+    if B > 1:
+        @eqx.filter_jit
+        def _run(denoiser, decoder, keys):
+            return jax.vmap(lambda k: _run_single(denoiser, decoder, k))(keys)
+    else:
+        @eqx.filter_jit
+        def _run(denoiser, decoder, keys):
+            return _run_single(denoiser, decoder, keys[0])
+
+    print(f"Generating {B}x {args.length}-residue binder ({args.steps} steps, seed={args.seed})...")
     t0 = time.perf_counter()
-    x_bb, x_lat = generate(
-        model=eqx.filter_jit(denoiser),
-        mask=mask,
-        n_residues=args.length,
-        latent_dim=LATENT_DIM,
-        key=jax.random.PRNGKey(args.seed),
-        nsteps=args.steps,
-        self_cond=not args.no_self_cond,
-        target=target,
-    )
-    jax.block_until_ready(x_bb)
+    keys = jax.random.split(jax.random.PRNGKey(args.seed), B)
+    x_bb, dec_out = _run(denoiser, decoder, keys)
+    jax.block_until_ready(dec_out.coors_nm)
     gen_time = time.perf_counter() - t0
     print(f"  {gen_time:.1f}s ({gen_time / args.steps * 1000:.0f}ms/step)")
 
-    # Decode
-    print("Decoding...")
-    dec_out = eqx.filter_jit(decoder)(DecoderBatch(z_latent=x_lat, ca_coors_nm=x_bb, mask=mask))
-    jax.block_until_ready(dec_out.coors_nm)
+    # Write one PDB per design
+    out_stem, out_ext = (args.out.rsplit(".", 1) + ["pdb"])[:2]
+    for bi in range(B):
+        bb_i = x_bb[bi] if B > 1 else x_bb
+        do_i = jax.tree.map(lambda x: x[bi] if B > 1 else x, dec_out)
 
-    pred_seq = "".join(AA_CODES[i] for i in np.array(dec_out.aatype[0]))
-    pred_coors = np.array(dec_out.coors_nm[0]) * 10.0
-    pred_amask = np.array(dec_out.atom_mask[0]).astype(np.float32)
-    binder_resnames = [AA_3LETTER[aa] for aa in pred_seq]
-    target_resnames = [AA_3LETTER[AA_CODES[i]] for i in target_seq]
+        pred_seq = "".join(AA_CODES[i] for i in np.array(do_i.aatype))
+        pred_coors = np.array(do_i.coors_nm) * 10.0
+        pred_amask = np.array(do_i.atom_mask).astype(np.float32)
+        binder_resnames = [AA_3LETTER[aa] for aa in pred_seq]
+        target_resnames = [AA_3LETTER[AA_CODES[i]] for i in target_seq]
 
-    # Save
-    structure = make_structure([
-        ("A", binder_resnames, pred_coors, pred_amask),
-        ("B", target_resnames, target_coords, target_amask),
-    ])
-    structure.write_pdb(args.out)
+        out_path = f"{out_stem}_{bi}.{out_ext}" if B > 1 else args.out
+        structure = make_structure([
+            ("A", binder_resnames, pred_coors, pred_amask),
+            ("B", target_resnames, target_coords, target_amask),
+        ])
+        structure.write_pdb(out_path)
 
-    # Summary
-    binder_ca = np.array(x_bb[0]) * 10.0
-    ca_dists = np.linalg.norm(np.diff(binder_ca, axis=0), axis=1)
-    target_ca = target_nm[:, 1, :] * 10.0
-    min_dists = np.min(np.linalg.norm(binder_ca[:, None] - target_ca[None], axis=-1), axis=1)
+        binder_ca = np.array(bb_i) * 10.0
+        ca_dists = np.linalg.norm(np.diff(binder_ca, axis=0), axis=1)
+        target_ca = target_nm[:, 1, :] * 10.0
+        min_dists = np.min(np.linalg.norm(binder_ca[:, None] - target_ca[None], axis=-1), axis=1)
 
-    print(f"\nSequence: {pred_seq}")
-    print(f"CA-CA distances: {ca_dists.mean():.2f} +/- {ca_dists.std():.2f} A")
-    print(f"Residues within 8A of target: {(min_dists < 8).sum()}/{args.length}")
-    print(f"Saved: {args.out}")
+        print(f"\n[{bi}] Sequence: {pred_seq}")
+        print(f"    CA-CA distances: {ca_dists.mean():.2f} +/- {ca_dists.std():.2f} A")
+        print(f"    Residues within 8A of target: {(min_dists < 8).sum()}/{args.length}")
+        print(f"    Saved: {out_path}")

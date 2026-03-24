@@ -40,27 +40,26 @@ class PairBiasAttention(eqx.Module):
         k = self.k_layer_norm(k)
         g = self.to_g(node_feats)
 
-        # Pair bias: [b, n, n, pair_dim] → [b, n, n, heads] → [b, heads, n, n]
+        # Pair bias: [n, n, pair_dim] -> [n, n, heads] -> [heads, n, n]
         if pair_feats is not None:
-            bias = rearrange(self.to_bias(pair_feats), "b i j h -> b h i j")
+            bias = rearrange(self.to_bias(pair_feats), "i j h -> h i j")
         else:
             bias = None
 
-        # Mask → additive bias (merge with pair bias)
+        # Mask -> additive bias
         if mask is not None:
-            mask_bias = jnp.where(rearrange(mask, "b i j -> b () i j"), 0.0, -1e4)
+            mask_bias = jnp.where(rearrange(mask, "i j -> () i j"), 0.0, -1e4)
             bias = mask_bias if bias is None else bias + mask_bias
 
-        # Reshape to [b, n, h, d] for jax.nn.dot_product_attention
-        q, k, v, g = (rearrange(t, "b n (h d) -> b n h d", h=h) for t in (q, k, v, g))
+        # Reshape to [n, h, d] for jax.nn.dot_product_attention
+        q, k, v, g = (rearrange(t, "n (h d) -> n h d", h=h) for t in (q, k, v, g))
 
         # Use JAX's dot_product_attention (flash attention on GPU)
-        # bias shape: [b, h, n, n] — JAX expects this layout
         out = jax.nn.dot_product_attention(q, k, v, bias=bias, scale=self.scale)
 
-        # Gate and project: [b, n, h, d] → [b, n, h*d]
-        g = rearrange(g, "b n h d -> b n (h d)")
-        out = rearrange(out, "b n h d -> b n (h d)")
+        # Gate and project: [n, h, d] -> [n, h*d]
+        g = rearrange(g, "n h d -> n (h d)")
+        out = rearrange(out, "n h d -> n (h d)")
         return self.to_out_node(jax.nn.sigmoid(g) * out)
 
 
@@ -74,7 +73,7 @@ class MultiHeadBiasedAttentionADALN_MM(eqx.Module):
         return cls(**{n: from_torch(c) for n, c in model.named_children()})
 
     def __call__(self, x, pair_rep, cond, mask):
-        pair_mask = mask[:, :, None] * mask[:, None, :]
+        pair_mask = mask[:, None] * mask[None, :]
         x = self.adaln(x, cond, mask)
         x = self.mha(node_feats=x, pair_feats=pair_rep, mask=pair_mask)
         x = self.scale_output(x, cond, mask)

@@ -34,8 +34,8 @@ class EncoderTransformer(eqx.Module):
 
     def _trunk(self, batch: EncoderBatch):
         mask = batch.mask.astype(jnp.float32)
-        b, n = batch.mask.shape
-        c = jnp.zeros((b, n, self.trunk.cond_dim))
+        (n,) = batch.mask.shape
+        c = jnp.zeros((n, self.trunk.cond_dim))
         seqs = self.trunk(self.seq_features(batch), self.pair_features(batch), c, mask)
         flat = self.latent_projection(seqs) * mask[..., None]
         return jnp.split(flat * mask[..., None], 2, axis=-1)

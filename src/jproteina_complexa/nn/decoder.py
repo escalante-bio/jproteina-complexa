@@ -36,19 +36,19 @@ class DecoderTransformer(eqx.Module):
 
     def __call__(self, batch: DecoderBatch) -> DecoderOutput:
         mask = batch.mask.astype(jnp.float32)
-        b, n = batch.mask.shape
-        c = jnp.zeros((b, n, self.trunk.cond_dim))
+        (n,) = batch.mask.shape
+        c = jnp.zeros((n, self.trunk.cond_dim))
 
         seqs = self.trunk(self.seq_features(batch), self.pair_features(batch), c, mask)
 
         logits = self.logit_linear(seqs) * mask[..., None]
 
-        coors = rearrange(self.struct_linear(seqs) * mask[..., None], "b n (a t) -> b n a t", a=37, t=3)
+        coors = rearrange(self.struct_linear(seqs) * mask[..., None], "n (a t) -> n a t", a=37, t=3)
         if self.abs_coors:
             coors = coors.at[..., 1, :].set(batch.ca_coors_nm)
         else:
             coors = coors.at[..., 1, :].set(jnp.zeros_like(batch.ca_coors_nm))
-            coors = coors + batch.ca_coors_nm[:, :, None, :]
+            coors = coors + batch.ca_coors_nm[:, None, :]
 
         aatype = jnp.argmax(logits, axis=-1) * batch.mask.astype(jnp.int32)
 

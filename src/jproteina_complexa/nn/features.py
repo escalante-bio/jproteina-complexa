@@ -19,7 +19,7 @@ def bin_and_one_hot(x, bin_limits):
 
 
 def bin_pairwise_distances(coords, min_dist, max_dist, n_bins):
-    d = jnp.sqrt(jnp.sum(jnp.square(coords[:, :, None] - coords[:, None]), axis=-1) + 1e-10)
+    d = jnp.sqrt(jnp.sum(jnp.square(coords[:, None] - coords[None, :]), axis=-1) + 1e-10)
     return bin_and_one_hot(d, jnp.linspace(min_dist, max_dist, n_bins - 1))
 
 
@@ -32,9 +32,9 @@ def time_embedding(t, dim, max_pos=2000):
     t = t * max_pos
     half = dim // 2
     freqs = jnp.exp(jnp.arange(half) * -(math.log(max_pos) / (half - 1)))
-    args = t[:, None] * freqs[None, :]
-    emb = jnp.concatenate([jnp.sin(args), jnp.cos(args)], axis=1)
-    return jnp.pad(emb, ((0, 0), (0, dim % 2))) if dim % 2 == 1 else emb
+    args = t * freqs
+    emb = jnp.concatenate([jnp.sin(args), jnp.cos(args)], axis=-1)
+    return jnp.pad(emb, (0, dim % 2)) if dim % 2 == 1 else emb
 
 
 def index_embedding(indices, dim, max_len=2056):
@@ -79,10 +79,10 @@ class DecoderPairFeatures(eqx.Module):
     seq_sep_dim: int = 127
 
     def __call__(self, batch: DecoderBatch):
-        n = batch.ca_coors_nm.shape[1]
+        n = batch.ca_coors_nm.shape[0]
         mask = batch.mask.astype(jnp.float32)
-        pair_mask = mask[:, None, :] * mask[:, :, None]
-        sep = jnp.broadcast_to(relative_seq_sep(n, self.seq_sep_dim)[None], (batch.ca_coors_nm.shape[0], n, n, self.seq_sep_dim))
+        pair_mask = mask[None, :] * mask[:, None]
+        sep = relative_seq_sep(n, self.seq_sep_dim)
         dists = bin_pairwise_distances(batch.ca_coors_nm, 0.1, 3.0, 30)
         feats = jnp.concatenate([sep, dists], axis=-1)
         return self.linear(feats * pair_mask[..., None]) * pair_mask[..., None]
@@ -95,24 +95,24 @@ class EncoderSeqFeatures(eqx.Module):
 
     def __call__(self, batch: EncoderBatch):
         mask = batch.mask.astype(jnp.float32)
-        b, n = mask.shape
+        (n,) = mask.shape
 
-        chain_break = jnp.zeros((b, n, 1))
+        chain_break = jnp.zeros((n, 1))
         aatype = jax.nn.one_hot(batch.residue_type * mask.astype(jnp.int32), 20) * mask[..., None]
 
         c_abs = batch.coords_nm * batch.coord_mask[..., None]
-        abs_feat = jnp.concatenate([rearrange(c_abs, "b n a t -> b n (a t)"), batch.coord_mask], axis=-1)
+        abs_feat = jnp.concatenate([rearrange(c_abs, "n a t -> n (a t)"), batch.coord_mask], axis=-1)
 
-        ca = batch.coords_nm[:, :, 1, :]
-        c_rel = (batch.coords_nm - ca[:, :, None, :]) * batch.coord_mask[..., None]
-        rel_feat = jnp.concatenate([rearrange(c_rel, "b n a t -> b n (a t)"), batch.coord_mask], axis=-1)
+        ca = batch.coords_nm[:, 1, :]
+        c_rel = (batch.coords_nm - ca[:, None, :]) * batch.coord_mask[..., None]
+        rel_feat = jnp.concatenate([rearrange(c_rel, "n a t -> n (a t)"), batch.coord_mask], axis=-1)
 
-        N, CA, C = batch.coords[:, :, 0], batch.coords[:, :, 1], batch.coords[:, :, 2]
-        psi = signed_dihedral(N[:, :-1], CA[:, :-1], C[:, :-1], N[:, 1:])
-        omega = signed_dihedral(CA[:, :-1], C[:, :-1], N[:, 1:], CA[:, 1:])
-        phi = signed_dihedral(C[:, :-1], N[:, 1:], CA[:, 1:], C[:, 1:])
-        bb = jnp.concatenate([jnp.stack([psi, omega, phi], axis=-1), jnp.zeros((b, 1, 3))], axis=1)
-        bb_feat = rearrange(bin_and_one_hot(bb, jnp.linspace(-jnp.pi, jnp.pi, 20)), "b n t d -> b n (t d)")
+        N, CA, C = batch.coords[:, 0], batch.coords[:, 1], batch.coords[:, 2]
+        psi = signed_dihedral(N[:-1], CA[:-1], C[:-1], N[1:])
+        omega = signed_dihedral(CA[:-1], C[:-1], N[1:], CA[1:])
+        phi = signed_dihedral(C[:-1], N[1:], CA[1:], C[1:])
+        bb = jnp.concatenate([jnp.stack([psi, omega, phi], axis=-1), jnp.zeros((1, 3))], axis=0)
+        bb_feat = rearrange(bin_and_one_hot(bb, jnp.linspace(-jnp.pi, jnp.pi, 20)), "n t d -> n (t d)")
 
         feats = jnp.concatenate([chain_break, aatype, abs_feat, rel_feat, bb_feat, batch.sidechain_angles_feat], axis=-1)
         return self.linear(feats * mask[..., None]) * mask[..., None]
@@ -123,32 +123,32 @@ class EncoderPairFeatures(eqx.Module):
     ln: LayerNorm | Identity
 
     def __call__(self, batch: EncoderBatch):
-        b, n = batch.mask.shape
+        (n,) = batch.mask.shape
         mask = batch.mask.astype(jnp.float32)
-        pair_mask = mask[:, None, :] * mask[:, :, None]
-        has_cb = batch.coord_mask[:, :, 3]
+        pair_mask = mask[None, :] * mask[:, None]
+        has_cb = batch.coord_mask[:, 3]
 
-        sep = jnp.broadcast_to(relative_seq_sep(n, 127)[None], (b, n, n, 127))
+        sep = relative_seq_sep(n, 127)
 
-        CA_i = batch.coords_nm[:, :, 1, :][:, :, None, :]
-        dist = lambda v: jnp.sqrt(jnp.sum(jnp.square(CA_i - v[:, None, :, :]), axis=-1) + 1e-10)
+        CA_i = batch.coords_nm[:, 1, :][:, None, :]
+        dist = lambda v: jnp.sqrt(jnp.sum(jnp.square(CA_i - v[None, :, :]), axis=-1) + 1e-10)
         d_bins = jnp.linspace(0.1, 2.0, 20)
         bb_dists = jnp.concatenate([
-            bin_and_one_hot(dist(batch.coords_nm[:, :, i, :]), d_bins) for i in range(4)
+            bin_and_one_hot(dist(batch.coords_nm[:, i, :]), d_bins) for i in range(4)
         ], axis=-1)
-        bb_dists = bb_dists.at[..., 63:84].multiply(has_cb[:, None, :, None])  # zero CB dists for glycine
+        bb_dists = bb_dists.at[..., 63:84].multiply(has_cb[None, :, None])  # zero CB dists for glycine
         bb_dists = bb_dists * pair_mask[..., None]
 
-        Nc, CAc, CBc = batch.coords[:, :, 0], batch.coords[:, :, 1], batch.coords[:, :, 3]
-        N1, CA1, CB1 = (v[:, :, None, :] for v in (Nc, CAc, CBc))
-        N2, CA2, CB2 = (v[:, None, :, :] for v in (Nc, CAc, CBc))
+        Nc, CAc, CBc = batch.coords[:, 0], batch.coords[:, 1], batch.coords[:, 3]
+        N1, CA1, CB1 = (v[:, None, :] for v in (Nc, CAc, CBc))
+        N2, CA2, CB2 = (v[None, :, :] for v in (Nc, CAc, CBc))
         angles = jnp.stack([
             signed_dihedral(N1, CA1, CB1, CB2), signed_dihedral(N2, CA2, CB2, CB1),
             bond_angle(CA1, CB1, CB2), bond_angle(CA2, CB2, CB1),
             signed_dihedral(CA1, CB1, CB2, CA2),
         ], axis=-1)
-        orient_mask = pair_mask * has_cb[:, :, None] * has_cb[:, :, None]  # PyTorch quirk
-        orient = rearrange(bin_and_one_hot(angles, jnp.linspace(-jnp.pi, jnp.pi, 20)), "b n m f d -> b n m (f d)")
+        orient_mask = pair_mask * has_cb[:, None] * has_cb[:, None]  # PyTorch quirk
+        orient = rearrange(bin_and_one_hot(angles, jnp.linspace(-jnp.pi, jnp.pi, 20)), "n m f d -> n m (f d)")
         orient = orient * orient_mask[..., None]
 
         feats = jnp.concatenate([sep, bb_dists, orient], axis=-1)
@@ -164,14 +164,14 @@ class DenoiserSeqFeatures(eqx.Module):
 
     def __call__(self, batch: DenoiserBatch):
         mask = batch.mask.astype(jnp.float32)
-        b, n = mask.shape
-        xsc_bb = batch.x_sc.bb_ca if batch.x_sc is not None else jnp.zeros((b, n, 3))
-        xsc_lat = batch.x_sc.local_latents if batch.x_sc is not None else jnp.zeros((b, n, self.latent_dim))
-        idx = jnp.broadcast_to(jnp.arange(1, n + 1, dtype=jnp.float32)[None], (b, n))
+        (n,) = mask.shape
+        xsc_bb = batch.x_sc.bb_ca if batch.x_sc is not None else jnp.zeros((n, 3))
+        xsc_lat = batch.x_sc.local_latents if batch.x_sc is not None else jnp.zeros((n, self.latent_dim))
+        idx = jnp.arange(1, n + 1, dtype=jnp.float32)
         feats = jnp.concatenate([
             batch.x_t.bb_ca, batch.x_t.local_latents, xsc_bb, xsc_lat,
-            jnp.zeros((b, n, 3)), jnp.zeros((b, n, 20)),  # optional features (disabled)
-            jnp.zeros((b, n, 1)),  # hotspot
+            jnp.zeros((n, 3)), jnp.zeros((n, 20)),  # optional features (disabled)
+            jnp.zeros((n, 1)),  # hotspot
             index_embedding(idx, self.idx_emb_dim),
         ], axis=-1)
         return self.linear(feats * mask[..., None]) * mask[..., None]
@@ -183,9 +183,9 @@ class DenoiserCondFeatures(eqx.Module):
 
     def __call__(self, batch: DenoiserBatch):
         mask = batch.mask.astype(jnp.float32)
-        b, n = mask.shape
-        emb_bb = jnp.broadcast_to(time_embedding(batch.t.bb_ca, self.t_emb_dim)[:, None, :], (b, n, self.t_emb_dim))
-        emb_lat = jnp.broadcast_to(time_embedding(batch.t.local_latents, self.t_emb_dim)[:, None, :], (b, n, self.t_emb_dim))
+        (n,) = mask.shape
+        emb_bb = jnp.broadcast_to(time_embedding(batch.t.bb_ca, self.t_emb_dim), (n, self.t_emb_dim))
+        emb_lat = jnp.broadcast_to(time_embedding(batch.t.local_latents, self.t_emb_dim), (n, self.t_emb_dim))
         feats = jnp.concatenate([emb_bb, emb_lat], axis=-1)
         return self.linear(feats * mask[..., None]) * mask[..., None]
 
@@ -196,19 +196,19 @@ class DenoiserPairFeatures(eqx.Module):
     seq_sep_dim: int = 127
 
     def __call__(self, batch: DenoiserBatch):
-        b, n = batch.mask.shape
+        (n,) = batch.mask.shape
         mask = batch.mask.astype(jnp.float32)
-        pair_mask = mask[:, None, :] * mask[:, :, None]
+        pair_mask = mask[None, :] * mask[:, None]
 
-        sep = jnp.broadcast_to(relative_seq_sep(n, self.seq_sep_dim)[None], (b, n, n, self.seq_sep_dim))
+        sep = relative_seq_sep(n, self.seq_sep_dim)
         xt_dists = bin_pairwise_distances(batch.x_t.bb_ca, 0.1, 3.0, 30)
-        xsc_dists = bin_pairwise_distances(batch.x_sc.bb_ca, 0.1, 3.0, 30) if batch.x_sc is not None else jnp.zeros((b, n, n, 30))
+        xsc_dists = bin_pairwise_distances(batch.x_sc.bb_ca, 0.1, 3.0, 30) if batch.x_sc is not None else jnp.zeros((n, n, 30))
 
         feats = jnp.concatenate([
             sep, xt_dists, xsc_dists,
-            jnp.zeros((b, n, n, 30)),  # optional CA dists (disabled)
-            jnp.zeros((b, n, n, 1)),   # chain idx
-            jnp.zeros((b, n, n, 1)),   # hotspot
+            jnp.zeros((n, n, 30)),  # optional CA dists (disabled)
+            jnp.zeros((n, n, 1)),   # chain idx
+            jnp.zeros((n, n, 1)),   # hotspot
         ], axis=-1)
         return self.ln(self.linear(feats * pair_mask[..., None])) * pair_mask[..., None]
 
@@ -219,11 +219,11 @@ class DenoiserPairCondFeatures(eqx.Module):
     t_emb_dim: int = 256
 
     def __call__(self, batch: DenoiserBatch):
-        b, n = batch.mask.shape
+        (n,) = batch.mask.shape
         mask = batch.mask.astype(jnp.float32)
-        pair_mask = mask[:, None, :] * mask[:, :, None]
-        emb_bb = jnp.broadcast_to(time_embedding(batch.t.bb_ca, self.t_emb_dim)[:, None, None, :], (b, n, n, self.t_emb_dim))
-        emb_lat = jnp.broadcast_to(time_embedding(batch.t.local_latents, self.t_emb_dim)[:, None, None, :], (b, n, n, self.t_emb_dim))
+        pair_mask = mask[None, :] * mask[:, None]
+        emb_bb = jnp.broadcast_to(time_embedding(batch.t.bb_ca, self.t_emb_dim), (n, n, self.t_emb_dim))
+        emb_lat = jnp.broadcast_to(time_embedding(batch.t.local_latents, self.t_emb_dim), (n, n, self.t_emb_dim))
         feats = jnp.concatenate([emb_bb, emb_lat], axis=-1)
         return self.ln(self.linear(feats * pair_mask[..., None])) * pair_mask[..., None]
 
@@ -237,7 +237,7 @@ class PairReprBuilder(eqx.Module):
 
     def __call__(self, batch):
         mask = batch.mask.astype(jnp.float32)
-        pair_mask = mask[:, None, :] * mask[:, :, None]
+        pair_mask = mask[None, :] * mask[:, None]
         rep = self.pair_features(batch)
         if self.pair_cond is not None:
             rep = self.adaln(rep, self.pair_cond(batch), pair_mask)
@@ -251,18 +251,17 @@ class TargetConcatFeatures(eqx.Module):
     ln: LayerNorm | Identity
 
     def __call__(self, batch: DenoiserBatch):
-        """Returns (projected [b, n_target, dim], mask [b, n_target])."""
+        """Returns (projected [n_target, dim], mask [n_target])."""
         if batch.target is None:
-            b = batch.mask.shape[0]
-            return jnp.zeros((b, 0, self.linear.weight.shape[0])), jnp.zeros((b, 0), dtype=jnp.bool_)
+            return jnp.zeros((0, self.linear.weight.shape[0])), jnp.zeros((0,), dtype=jnp.bool_)
 
         tgt = batch.target
         c_abs = tgt.coords * tgt.atom_mask[..., None]
-        abs_feat = jnp.concatenate([rearrange(c_abs, "b n a t -> b n (a t)"), tgt.atom_mask], axis=-1)
+        abs_feat = jnp.concatenate([rearrange(c_abs, "n a t -> n (a t)"), tgt.atom_mask], axis=-1)
 
-        ca = tgt.coords[:, :, 1, :]
-        c_rel = (tgt.coords - ca[:, :, None, :]) * tgt.atom_mask[..., None]
-        rel_feat = jnp.concatenate([rearrange(c_rel, "b n a t -> b n (a t)"), tgt.atom_mask], axis=-1)
+        ca = tgt.coords[:, 1, :]
+        c_rel = (tgt.coords - ca[:, None, :]) * tgt.atom_mask[..., None]
+        rel_feat = jnp.concatenate([rearrange(c_rel, "n a t -> n (a t)"), tgt.atom_mask], axis=-1)
 
         seq_oh = jax.nn.one_hot(tgt.seq * tgt.seq_mask.astype(jnp.int32), 20) * tgt.seq_mask[..., None]
         mask_feat = tgt.atom_mask.astype(jnp.float32)
@@ -273,4 +272,3 @@ class TargetConcatFeatures(eqx.Module):
         raw = jnp.concatenate([abs_feat, seq_oh, mask_feat, hotspot, rel_feat, sc, tor], axis=-1)
         proj = self.ln(self.linear(raw * tgt.seq_mask[..., None]))
         return proj * tgt.seq_mask[..., None], tgt.seq_mask
-

@@ -151,6 +151,15 @@ PRODUCTION_SAMPLING = SamplingConfig(
 
 # ---- Generation ----
 
+class _ScanState(eqx.Module):
+    """Carry for the generation scan loop."""
+    x_bb: jax.Array
+    x_lat: jax.Array
+    x_sc_bb: jax.Array
+    x_sc_lat: jax.Array
+    key: jax.Array
+
+
 def generate(
     model,
     mask,
@@ -167,7 +176,7 @@ def generate(
 
     Args:
         model: the denoiser (LocalLatentsTransformer), called as model(DenoiserBatch)
-        mask: [b, n] boolean residue mask
+        mask: [n] boolean residue mask
         n_residues: number of binder residues
         latent_dim: dimension of latent space
         key: PRNG key
@@ -177,7 +186,7 @@ def generate(
         target: TargetCond or None
 
     Returns:
-        (bb_ca [b, n, 3], local_latents [b, n, latent_dim])
+        (bb_ca [n, 3], local_latents [n, latent_dim])
     """
     from jproteina_complexa.types import DenoiserBatch, NoisyState, Timesteps
 
@@ -186,42 +195,43 @@ def generate(
     self_cond = self_cond if self_cond is not None else cfg.self_cond
 
     mask_f = mask.astype(jnp.float32)
-    batch_shape = mask.shape[:-1]
 
     ts_bb = cfg.bb_ca.time_schedule(nsteps)
     ts_lat = cfg.local_latents.time_schedule(nsteps)
 
     key, k1, k2 = jax.random.split(key, 3)
-    x_bb = sample_noise(k1, (*batch_shape, n_residues, 3), mask_f, zero_com=cfg.bb_ca.zero_com)
-    x_lat = sample_noise(k2, (*batch_shape, n_residues, latent_dim), mask_f, zero_com=cfg.local_latents.zero_com)
+    x_bb = sample_noise(k1, (n_residues, 3), mask_f, zero_com=cfg.bb_ca.zero_com)
+    x_lat = sample_noise(k2, (n_residues, latent_dim), mask_f, zero_com=cfg.local_latents.zero_com)
 
-    x_sc_bb = jnp.zeros_like(x_bb)
-    x_sc_lat = jnp.zeros_like(x_lat)
-
-    for i in range(nsteps):
-        t_bb = ts_bb[i]
-        t_lat = ts_lat[i]
+    def step_fn(state, ts):
+        t_bb, t_bb_next, t_lat, t_lat_next = ts
 
         batch = DenoiserBatch(
-            x_t=NoisyState(bb_ca=x_bb, local_latents=x_lat),
-            t=Timesteps(
-                bb_ca=jnp.broadcast_to(t_bb, batch_shape),
-                local_latents=jnp.broadcast_to(t_lat, batch_shape),
-            ),
+            x_t=NoisyState(bb_ca=state.x_bb, local_latents=state.x_lat),
+            t=Timesteps(bb_ca=t_bb, local_latents=t_lat),
             mask=mask,
-            x_sc=NoisyState(bb_ca=x_sc_bb, local_latents=x_sc_lat) if self_cond else None,
+            x_sc=NoisyState(bb_ca=state.x_sc_bb, local_latents=state.x_sc_lat) if self_cond else None,
             target=target,
         )
 
         out = model(batch)
         v_bb, v_lat = out.bb_ca, out.local_latents
 
-        if self_cond:
-            x_sc_bb = predict_x1_from_v(x_bb, v_bb, t_bb[None])
-            x_sc_lat = predict_x1_from_v(x_lat, v_lat, t_lat[None])
+        x_sc_bb = predict_x1_from_v(state.x_bb, v_bb, t_bb) if self_cond else state.x_sc_bb
+        x_sc_lat = predict_x1_from_v(state.x_lat, v_lat, t_lat) if self_cond else state.x_sc_lat
 
-        key, k_bb, k_lat = jax.random.split(key, 3)
-        x_bb = cfg.bb_ca.step(x_bb, v_bb, t_bb[None], ts_bb[i + 1] - t_bb, mask_f, k_bb)
-        x_lat = cfg.local_latents.step(x_lat, v_lat, t_lat[None], ts_lat[i + 1] - t_lat, mask_f, k_lat)
+        key, k_bb, k_lat = jax.random.split(state.key, 3)
+        x_bb = cfg.bb_ca.step(state.x_bb, v_bb, t_bb, t_bb_next - t_bb, mask_f, k_bb)
+        x_lat = cfg.local_latents.step(state.x_lat, v_lat, t_lat, t_lat_next - t_lat, mask_f, k_lat)
 
-    return x_bb, x_lat
+        return _ScanState(x_bb=x_bb, x_lat=x_lat, x_sc_bb=x_sc_bb, x_sc_lat=x_sc_lat, key=key), None
+
+    init = _ScanState(
+        x_bb=x_bb, x_lat=x_lat,
+        x_sc_bb=jnp.zeros_like(x_bb), x_sc_lat=jnp.zeros_like(x_lat),
+        key=key,
+    )
+    scan_inputs = (ts_bb[:-1], ts_bb[1:], ts_lat[:-1], ts_lat[1:])
+
+    final, _ = jax.lax.scan(step_fn, init, scan_inputs)
+    return final.x_bb, final.x_lat
