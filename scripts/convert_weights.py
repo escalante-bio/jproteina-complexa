@@ -6,11 +6,14 @@ import time
 import os
 
 # Mocks for transitive deps
+UPSTREAM = os.environ.get("UPSTREAM", os.path.join(os.path.dirname(__file__), "..", "proteina-complexa"))
+CKPT_DIR = os.path.join(UPSTREAM, "ckpts")
+
 sys.modules["torch_scatter"] = types.ModuleType("torch_scatter")
 sys.modules["torch_scatter"].scatter_mean = None
-sys.path.insert(0, "proteina-complexa/community_models")
-sys.path.insert(0, "proteina-complexa/src")
-sys.path.insert(0, "src")
+sys.path.insert(0, os.path.join(UPSTREAM, "community_models"))
+sys.path.insert(0, os.path.join(UPSTREAM, "src"))
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 import openfold, openfold.np.residue_constants
 import torch
@@ -33,11 +36,12 @@ import jproteina_complexa.nn.register
 from jproteina_complexa.backend import from_torch
 from jproteina_complexa.serialization import save_model
 
-os.makedirs("weights", exist_ok=True)
+OUT_DIR = os.environ.get("OUT_DIR", "weights")
+os.makedirs(OUT_DIR, exist_ok=True)
 
 # ---- Denoiser ----
 print("Converting denoiser...")
-ckpt = torch.load("proteina-complexa/ckpts/complexa.ckpt", map_location="cpu", weights_only=False)
+ckpt = torch.load(os.path.join(CKPT_DIR, "complexa.ckpt"), map_location="cpu", weights_only=False)
 nn_cfg = OmegaConf.to_container(ckpt["hyper_parameters"]["cfg_exp"].nn)
 for k in ckpt["state_dict"]:
     if "local_latents_linear.1.weight" in k:
@@ -49,13 +53,13 @@ pt = PTDenoiser(**nn_cfg)
 pt.load_state_dict({k.removeprefix("nn."): v for k, v in ckpt["state_dict"].items() if k.startswith("nn.")})
 pt.eval()
 jax_denoiser = from_torch(pt)
-save_model(jax_denoiser, "weights/denoiser")
-print(f"  Saved weights/denoiser.eqx + weights/denoiser.skeleton.pkl")
+save_model(jax_denoiser, os.path.join(OUT_DIR, "denoiser"))
+print(f"  Saved {OUT_DIR}/denoiser.eqx + {OUT_DIR}/denoiser.skeleton.pkl")
 del ckpt, pt, jax_denoiser
 
 # ---- Decoder ----
 print("Converting decoder...")
-ae_ckpt = torch.load("proteina-complexa/ckpts/complexa_ae.ckpt", map_location="cpu", weights_only=False)
+ae_ckpt = torch.load(os.path.join(CKPT_DIR, "complexa_ae.ckpt"), map_location="cpu", weights_only=False)
 ae_cfg = OmegaConf.to_container(ae_ckpt["hyper_parameters"]["cfg_ae"].nn_ae, resolve=True)
 
 from proteinfoundation.partial_autoencoder.decoder import DecoderTransformer as PTDecoder
@@ -63,8 +67,8 @@ pt = PTDecoder(**ae_cfg)
 pt.load_state_dict({k.removeprefix("decoder."): v for k, v in ae_ckpt["state_dict"].items() if k.startswith("decoder.")})
 pt.eval()
 jax_decoder = from_torch(pt)
-save_model(jax_decoder, "weights/decoder")
-print(f"  Saved weights/decoder.eqx + weights/decoder.skeleton.pkl")
+save_model(jax_decoder, os.path.join(OUT_DIR, "decoder"))
+print(f"  Saved {OUT_DIR}/decoder.eqx + {OUT_DIR}/decoder.skeleton.pkl")
 
 # ---- Encoder ----
 print("Converting encoder...")
@@ -73,8 +77,8 @@ pt = PTEncoder(**ae_cfg)
 pt.load_state_dict({k.removeprefix("encoder."): v for k, v in ae_ckpt["state_dict"].items() if k.startswith("encoder.")})
 pt.eval()
 jax_encoder = from_torch(pt)
-save_model(jax_encoder, "weights/encoder")
-print(f"  Saved weights/encoder.eqx + weights/encoder.skeleton.pkl")
+save_model(jax_encoder, os.path.join(OUT_DIR, "encoder"))
+print(f"  Saved {OUT_DIR}/encoder.eqx + {OUT_DIR}/encoder.skeleton.pkl")
 del ae_ckpt, pt, jax_encoder
 
-print("\nDone! All models saved to weights/")
+print(f"\nDone! All models saved to {OUT_DIR}/")

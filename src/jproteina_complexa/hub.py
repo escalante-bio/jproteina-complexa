@@ -5,7 +5,7 @@ import os
 from jproteina_complexa.serialization import load_model
 
 HF_REPO = "escalante-bio/jproteina-complexa"
-DEFAULT_CACHE = os.path.join(os.path.expanduser("~"), ".cache", "jproteina_complexa", "weights")
+DEFAULT_CACHE = os.path.join(os.path.expanduser("~"), ".cache", "jproteina_complexa", "weights_v2")
 _MODEL_NAMES = ("denoiser", "decoder", "encoder")
 
 

@@ -1,20 +1,124 @@
-"""LocalLatentsTransformer — the denoising model for flow matching."""
+"""Top-level model classes: encoder, decoder, and denoiser."""
 
+import jax
 import jax.numpy as jnp
 import equinox as eqx
+from einops import rearrange
 
 from jproteina_complexa.backend import from_torch
-from jproteina_complexa.types import DenoiserBatch, DenoiserOutput
-from jproteina_complexa.nn.primitives import Sequential
-from jproteina_complexa.nn.transition import Transition
-from jproteina_complexa.nn.transformer import MultiheadAttnAndTransition, TransformerStack
+from jproteina_complexa.constants import RESTYPE_ATOM37_MASK as _RESTYPE_ATOM37_MASK_NP
+from jproteina_complexa.types import (
+    EncoderBatch, EncoderOutput,
+    DecoderBatch, DecoderOutput,
+    DenoiserBatch, DenoiserOutput,
+)
+from jproteina_complexa.nn.layers import Sequential, Identity, Transition
+from jproteina_complexa.nn.transformer import TransformerStack
 from jproteina_complexa.nn.features import (
+    EncoderSeqFeatures, EncoderPairFeatures,
+    DecoderSeqFeatures, DecoderPairFeatures,
     DenoiserSeqFeatures, DenoiserCondFeatures,
     DenoiserPairFeatures, DenoiserPairCondFeatures,
     PairReprBuilder, TargetConcatFeatures,
     bin_and_one_hot, relative_seq_sep,
 )
 
+RESTYPE_ATOM37_MASK = jnp.array(_RESTYPE_ATOM37_MASK_NP, dtype=jnp.bool_)
+
+
+# ---- Encoder ----
+
+class EncoderTransformer(eqx.Module):
+    seq_features: EncoderSeqFeatures
+    pair_features: EncoderPairFeatures
+    trunk: TransformerStack
+    latent_projection: Sequential
+    ln_z: Identity
+
+    @classmethod
+    def from_torch(cls, pt):
+        layers = [from_torch(l) for l in pt.transformer_layers]
+        return cls(
+            seq_features=EncoderSeqFeatures(linear=from_torch(pt.init_repr_factory.linear_out)),
+            pair_features=EncoderPairFeatures(
+                linear=from_torch(pt.pair_rep_factory.linear_out),
+                ln=from_torch(pt.pair_rep_factory.ln_out),
+            ),
+            trunk=TransformerStack.from_layers(layers),
+            latent_projection=from_torch(pt.latent_decoder_mean_n_log_scale),
+            ln_z=from_torch(pt.ln_z),
+        )
+
+    def _trunk(self, batch: EncoderBatch):
+        mask = batch.mask.astype(jnp.float32)
+        (n,) = batch.mask.shape
+        c = jnp.zeros((n, self.trunk.cond_dim))
+        seqs = self.trunk(self.seq_features(batch), self.pair_features(batch), c, mask)
+        flat = self.latent_projection(seqs) * mask[..., None]
+        return jnp.split(flat, 2, axis=-1)
+
+    def __call__(self, batch: EncoderBatch, *, key) -> EncoderOutput:
+        mean, log_scale = self._trunk(batch)
+        mask = batch.mask.astype(jnp.float32)
+        z = mean + jax.random.normal(key, log_scale.shape) * jnp.exp(log_scale)
+        return EncoderOutput(mean=mean, log_scale=log_scale, z_latent=self.ln_z(z) * mask[..., None])
+
+    def encode_deterministic(self, batch: EncoderBatch) -> EncoderOutput:
+        mean, log_scale = self._trunk(batch)
+        mask = batch.mask.astype(jnp.float32)
+        return EncoderOutput(mean=mean, log_scale=log_scale, z_latent=self.ln_z(mean) * mask[..., None])
+
+
+# ---- Decoder ----
+
+class DecoderTransformer(eqx.Module):
+    seq_features: DecoderSeqFeatures
+    pair_features: DecoderPairFeatures
+    trunk: TransformerStack
+    logit_linear: Sequential
+    struct_linear: Sequential
+    abs_coors: bool = False
+
+    @classmethod
+    def from_torch(cls, pt):
+        layers = [from_torch(l) for l in pt.transformer_layers]
+        return cls(
+            seq_features=DecoderSeqFeatures(linear=from_torch(pt.init_repr_factory.linear_out)),
+            pair_features=DecoderPairFeatures(linear=from_torch(pt.pair_rep_factory.linear_out)),
+            trunk=TransformerStack.from_layers(layers),
+            logit_linear=from_torch(pt.logit_linear),
+            struct_linear=from_torch(pt.struct_linear),
+            abs_coors=pt.abs_coors,
+        )
+
+    def __call__(self, batch: DecoderBatch) -> DecoderOutput:
+        mask = batch.mask.astype(jnp.float32)
+        (n,) = batch.mask.shape
+        c = jnp.zeros((n, self.trunk.cond_dim))
+
+        seqs = self.trunk(self.seq_features(batch), self.pair_features(batch), c, mask)
+
+        logits = self.logit_linear(seqs) * mask[..., None]
+
+        coors = rearrange(self.struct_linear(seqs) * mask[..., None], "n (a t) -> n a t", a=37, t=3)
+        if self.abs_coors:
+            coors = coors.at[..., 1, :].set(batch.ca_coors_nm)
+        else:
+            coors = coors.at[..., 1, :].set(jnp.zeros_like(batch.ca_coors_nm))
+            coors = coors + batch.ca_coors_nm[:, None, :]
+
+        aatype = jnp.argmax(logits, axis=-1) * batch.mask.astype(jnp.int32)
+
+        return DecoderOutput(
+            coors_nm=coors,
+            seq_logits=logits,
+            aatype=aatype,
+            atom_mask=RESTYPE_ATOM37_MASK[aatype] * batch.mask[..., None],
+            mask=batch.mask,
+        )
+
+
+# ---- Denoiser ----
 
 class LocalLatentsTransformer(eqx.Module):
     seq_features: DenoiserSeqFeatures
@@ -131,13 +235,9 @@ class LocalLatentsTransformer(eqx.Module):
         Returns:
             [n_src, n_tgt, 4*(n_bins+1)] — binned distances to N, CA, C, CB
         """
-        # src: [n_src, 1, 3] -> [n_src, 1, 1, 3] to broadcast with [1, n_tgt, 4, 3]
-        # result: [n_src, n_tgt, 4]
         dists = jnp.sqrt(jnp.sum(jnp.square(src[..., None, :] - tgt_coords[None, :, :4, :]), axis=-1) + 1e-10)
-        # Zero CB distances for residues without CB
         dists = dists.at[..., 3].multiply(has_cb[None, :])
-        # Bin each atom channel and concatenate: [n_src, n_tgt, 4*(n_bins+1)]
-        binned = bin_and_one_hot(dists, d_bins)  # [n_src, n_tgt, 4, n_bins+1]
+        binned = bin_and_one_hot(dists, d_bins)
         return binned.reshape(*binned.shape[:2], -1)
 
     def _extend_pair(self, batch, pair_rep, n_orig, n_concat):
@@ -146,24 +246,23 @@ class LocalLatentsTransformer(eqx.Module):
         tgt = batch.target
 
         d_bins = jnp.linspace(0.1, 2.0, 20)
-        has_cb_target = tgt.atom_mask[:, 3]  # [n_concat]
+        has_cb_target = tgt.atom_mask[:, 3]
+
+        h_tgt = tgt.hotspot_mask if tgt.hotspot_mask is not None else jnp.zeros((n_concat,), dtype=jnp.bool_)
 
         # Upper-right block: binder->target distances
-        binder_ca = batch.x_t.bb_ca[:, None, :]  # [n_orig, 1, 3]
+        binder_ca = batch.x_t.bb_ca[:, None, :]
         ur_dists = self._pairwise_bb_dists(binder_ca, tgt.coords, has_cb_target, d_bins)
         ur_sep = jnp.zeros((n_orig, n_concat, 127))
-        h_binder = jnp.zeros((n_orig,), dtype=jnp.bool_)
-        h_target_bool = tgt.hotspot_mask if tgt.hotspot_mask is not None else jnp.zeros((n_concat,), dtype=jnp.bool_)
-        ur_hotspot = (h_binder[:, None] | h_target_bool[None, :]).astype(jnp.float32)[..., None]
+        ur_hotspot = jnp.broadcast_to(h_tgt[None, :], (n_orig, n_concat)).astype(jnp.float32)[..., None]
         ur_raw = jnp.concatenate([ur_sep, ur_dists, jnp.ones((n_orig, n_concat, 1)), ur_hotspot], axis=-1)
         ur_proj = self.concat_pair_ln(self.concat_pair_linear(ur_raw))
 
         # Lower-right block: target->target distances
-        t_ca = tgt.coords[:, 1, :][:, None, :]  # [n_concat, 1, 3]
+        t_ca = tgt.coords[:, 1, :][:, None, :]
         lr_dists = self._pairwise_bb_dists(t_ca, tgt.coords, has_cb_target, d_bins)
         lr_sep = relative_seq_sep(n_concat, 127)
-        h_bool = tgt.hotspot_mask if tgt.hotspot_mask is not None else jnp.zeros((n_concat,), dtype=jnp.bool_)
-        lr_hotspot = (h_bool[:, None] | h_bool[None, :]).astype(jnp.float32)[..., None]
+        lr_hotspot = (h_tgt[:, None] | h_tgt[None, :]).astype(jnp.float32)[..., None]
         lr_raw = jnp.concatenate([lr_sep, lr_dists, jnp.zeros((n_concat, n_concat, 1)), lr_hotspot], axis=-1)
         lr_proj = self.concat_pair_ln(self.concat_pair_linear(lr_raw))
 

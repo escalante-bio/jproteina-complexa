@@ -5,8 +5,7 @@ import jax.numpy as jnp
 import equinox as eqx
 
 from jproteina_complexa.backend import from_torch
-from jproteina_complexa.nn.attention import MultiHeadBiasedAttentionADALN_MM
-from jproteina_complexa.nn.transition import TransitionADALN
+from jproteina_complexa.nn.layers import MultiHeadBiasedAttentionADALN_MM, TransitionADALN
 
 
 class MultiheadAttnAndTransition(eqx.Module):

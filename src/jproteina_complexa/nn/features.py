@@ -8,8 +8,7 @@ from einops import rearrange
 from jaxtyping import Array, Float
 
 from jproteina_complexa.types import DecoderBatch, EncoderBatch, DenoiserBatch
-from jproteina_complexa.nn.primitives import Linear, LayerNorm, Identity
-from jproteina_complexa.nn.adaptive import AdaptiveLayerNorm
+from jproteina_complexa.nn.layers import Linear, LayerNorm, Identity, AdaptiveLayerNorm
 
 
 # ---- Shared primitives ----
@@ -222,10 +221,13 @@ class DenoiserPairCondFeatures(eqx.Module):
         (n,) = batch.mask.shape
         mask = batch.mask.astype(jnp.float32)
         pair_mask = mask[None, :] * mask[:, None]
-        emb_bb = jnp.broadcast_to(time_embedding(batch.t.bb_ca, self.t_emb_dim), (n, n, self.t_emb_dim))
-        emb_lat = jnp.broadcast_to(time_embedding(batch.t.local_latents, self.t_emb_dim), (n, n, self.t_emb_dim))
-        feats = jnp.concatenate([emb_bb, emb_lat], axis=-1)
-        return self.ln(self.linear(feats * pair_mask[..., None])) * pair_mask[..., None]
+        # Time embeddings are spatially uniform — project once, then broadcast.
+        emb = jnp.concatenate([
+            time_embedding(batch.t.bb_ca, self.t_emb_dim),
+            time_embedding(batch.t.local_latents, self.t_emb_dim),
+        ])
+        proj = self.ln(self.linear(emb))
+        return jnp.broadcast_to(proj, (n, n, proj.shape[0])) * pair_mask[..., None]
 
 
 # ---- PairReprBuilder ----

@@ -65,7 +65,7 @@ pt_model.eval()
 # Import JAX modules and register converters
 import jproteina_complexa.nn.register
 from jproteina_complexa.backend import from_torch
-from jproteina_complexa.nn.decoder import DecoderTransformer
+from jproteina_complexa.nn.models import DecoderTransformer
 
 from jproteina_complexa.types import DecoderBatch
 

@@ -53,7 +53,7 @@ def force_zero_com(x, mask=None):
 
 
 def sample_noise(key, shape, mask=None, zero_com=True):
-    """Sample Gaussian noise. shape = (batch, n_residues, dim)."""
+    """Sample Gaussian noise. shape = (n_residues, dim)."""
     x = jax.random.normal(key, shape)
     if mask is not None:
         x = x * mask[..., None]

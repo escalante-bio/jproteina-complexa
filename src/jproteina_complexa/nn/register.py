@@ -4,14 +4,13 @@ Only needed during weight conversion. Not imported at inference time.
 """
 
 from jproteina_complexa.backend import from_torch
-from jproteina_complexa.nn.primitives import SwiGLU
-from jproteina_complexa.nn.adaptive import AdaptiveLayerNorm, AdaptiveOutputScale
-from jproteina_complexa.nn.transition import Transition, TransitionADALN
-from jproteina_complexa.nn.attention import PairBiasAttention, MultiHeadBiasedAttentionADALN_MM
+from jproteina_complexa.nn.layers import (
+    SwiGLU, AdaptiveLayerNorm, AdaptiveOutputScale,
+    Transition, TransitionADALN,
+    PairBiasAttention, MultiHeadBiasedAttentionADALN_MM,
+)
 from jproteina_complexa.nn.transformer import MultiheadAttnAndTransition
-from jproteina_complexa.nn.decoder import DecoderTransformer
-from jproteina_complexa.nn.encoder import EncoderTransformer
-from jproteina_complexa.nn.local_latents_transformer import LocalLatentsTransformer
+from jproteina_complexa.nn.models import DecoderTransformer, EncoderTransformer, LocalLatentsTransformer
 
 # PyTorch modules (for type dispatch)
 import proteinfoundation.nn.modules.swiglu as _sw
