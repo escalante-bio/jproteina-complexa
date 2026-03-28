@@ -100,17 +100,18 @@ class DecoderTransformer(eqx.Module):
 
         logits = self.logit_linear(seqs) * mask[..., None]
 
+        ca_nm = batch.ca_coors * 0.1
         coors = rearrange(self.struct_linear(seqs) * mask[..., None], "n (a t) -> n a t", a=37, t=3)
         if self.abs_coors:
-            coors = coors.at[..., 1, :].set(batch.ca_coors_nm)
+            coors = coors.at[..., 1, :].set(ca_nm)
         else:
-            coors = coors.at[..., 1, :].set(jnp.zeros_like(batch.ca_coors_nm))
-            coors = coors + batch.ca_coors_nm[:, None, :]
+            coors = coors.at[..., 1, :].set(jnp.zeros_like(ca_nm))
+            coors = coors + ca_nm[:, None, :]
 
         aatype = jnp.argmax(logits, axis=-1) * batch.mask.astype(jnp.int32)
 
         return DecoderOutput(
-            coors_nm=coors,
+            coors=coors * 10.0,
             seq_logits=logits,
             aatype=aatype,
             atom_mask=RESTYPE_ATOM37_MASK[aatype] * batch.mask[..., None],
@@ -244,23 +245,24 @@ class LocalLatentsTransformer(eqx.Module):
         pair_dim = self.concat_pair_linear.weight.shape[0]
         n_ext = n_orig + n_concat
         tgt = batch.target
+        tgt_nm = tgt.coords * 0.1
 
         d_bins = jnp.linspace(0.1, 2.0, 20)
         has_cb_target = tgt.atom_mask[:, 3]
 
         h_tgt = tgt.hotspot_mask if tgt.hotspot_mask is not None else jnp.zeros((n_concat,), dtype=jnp.bool_)
 
-        # Upper-right block: binder->target distances
+        # Upper-right block: binder->target distances (bb_ca is already nm from flow matching)
         binder_ca = batch.x_t.bb_ca[:, None, :]
-        ur_dists = self._pairwise_bb_dists(binder_ca, tgt.coords, has_cb_target, d_bins)
+        ur_dists = self._pairwise_bb_dists(binder_ca, tgt_nm, has_cb_target, d_bins)
         ur_sep = jnp.zeros((n_orig, n_concat, 127))
         ur_hotspot = jnp.broadcast_to(h_tgt[None, :], (n_orig, n_concat)).astype(jnp.float32)[..., None]
         ur_raw = jnp.concatenate([ur_sep, ur_dists, jnp.ones((n_orig, n_concat, 1)), ur_hotspot], axis=-1)
         ur_proj = self.concat_pair_ln(self.concat_pair_linear(ur_raw))
 
         # Lower-right block: target->target distances
-        t_ca = tgt.coords[:, 1, :][:, None, :]
-        lr_dists = self._pairwise_bb_dists(t_ca, tgt.coords, has_cb_target, d_bins)
+        t_ca = tgt_nm[:, 1, :][:, None, :]
+        lr_dists = self._pairwise_bb_dists(t_ca, tgt_nm, has_cb_target, d_bins)
         lr_sep = relative_seq_sep(n_concat, 127)
         lr_hotspot = (h_tgt[:, None] | h_tgt[None, :]).astype(jnp.float32)[..., None]
         lr_raw = jnp.concatenate([lr_sep, lr_dists, jnp.zeros((n_concat, n_concat, 1)), lr_hotspot], axis=-1)

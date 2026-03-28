@@ -1,11 +1,15 @@
-"""Typed containers and model outputs (unbatched — use jax.vmap for batching)."""
+"""Typed containers and model outputs (unbatched — use jax.vmap for batching).
+
+All coordinates are in Angstroms at the public API boundary.
+Internal nm conversion is handled by the models and feature computation.
+"""
 
 import jax.numpy as jnp
 import equinox as eqx
 from jaxtyping import Array, Float, Bool, Int
 
 
-# ---- Noisy state (used by denoiser) ----
+# ---- Noisy state (used by denoiser, internal to flow matching — nm) ----
 
 class NoisyState(eqx.Module):
     bb_ca: Float[Array, "N 3"]
@@ -20,7 +24,7 @@ class Timesteps(eqx.Module):
 # ---- Target conditioning ----
 
 class TargetCond(eqx.Module):
-    coords: Float[Array, "Nt 37 3"]       # target atom coords (nm)
+    coords: Float[Array, "Nt 37 3"]       # target atom coords (Angstroms)
     atom_mask: Float[Array, "Nt 37"]       # target atom mask
     seq: Int[Array, "Nt"]                  # target residue types
     seq_mask: Bool[Array, "Nt"]            # target residue mask
@@ -33,13 +37,12 @@ class TargetCond(eqx.Module):
 
 class DecoderBatch(eqx.Module):
     z_latent: Float[Array, "N D"]
-    ca_coors_nm: Float[Array, "N 3"]
+    ca_coors: Float[Array, "N 3"]          # Angstroms
     mask: Bool[Array, "N"]
 
 
 class EncoderBatch(eqx.Module):
     coords: Float[Array, "N 37 3"]         # Angstroms
-    coords_nm: Float[Array, "N 37 3"]      # nanometers
     coord_mask: Float[Array, "N 37"]
     residue_type: Int[Array, "N"]
     mask: Bool[Array, "N"]
@@ -57,7 +60,7 @@ class DenoiserBatch(eqx.Module):
 # ---- Output types ----
 
 class DecoderOutput(eqx.Module):
-    coors_nm: Float[Array, "N 37 3"]
+    coors: Float[Array, "N 37 3"]          # Angstroms
     seq_logits: Float[Array, "N 20"]
     aatype: Int[Array, "N"]
     atom_mask: Bool[Array, "N 37"]

@@ -84,8 +84,8 @@ print(f"  Generation: {gen_time:.1f}s ({gen_time/N_STEPS*1000:.0f}ms/step)")
 
 # ---- Decode ----
 print("\nDecoding...")
-dec_out = decode(DecoderBatch(z_latent=x_lat, ca_coors_nm=x_bb, mask=mask))
-jax.block_until_ready(dec_out.coors_nm)
+dec_out = decode(DecoderBatch(z_latent=x_lat, ca_coors=x_bb, mask=mask))
+jax.block_until_ready(dec_out.coors)
 
 # ---- Analysis ----
 print("\n" + "=" * 70)
@@ -101,7 +101,7 @@ target_ca_ang = target_nm[:, 1, :] * 10.0
 min_dists = np.min(np.linalg.norm(binder_ca[:, None] - target_ca_ang[None], axis=-1), axis=1)
 n_contact = (min_dists < 8.0).sum()
 
-pred_coors = np.array(dec_out.coors_nm[0]) * 10.0
+pred_coors = np.array(dec_out.coors[0]) * 10.0
 n_ca_bond = np.linalg.norm(pred_coors[:, 1] - pred_coors[:, 0], axis=1)
 ca_c_bond = np.linalg.norm(pred_coors[:, 2] - pred_coors[:, 1], axis=1)
 

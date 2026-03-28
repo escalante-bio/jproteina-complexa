@@ -2,8 +2,11 @@
 
 import gemmi
 import numpy as np
+import jax.numpy as jnp
 
 from jproteina_complexa.constants import AA_3TO1, AA_1TO_IDX, AA_3LETTER, AA_CODES, ATOM_NAMES
+from jproteina_complexa.types import TargetCond
+from jproteina_complexa.target_features import compute_target_sidechain_feat, compute_target_torsion_feat
 
 
 def load_target(chain: gemmi.Chain, center: bool = True):
@@ -39,6 +42,39 @@ def load_target(chain: gemmi.Chain, center: bool = True):
         coords = coords - com[None, None, :]
 
     return coords, mask, seq, n
+
+
+def load_target_cond(chain: gemmi.Chain, hotspots: list[int] | None = None) -> TargetCond:
+    """Build a TargetCond from a gemmi Chain.
+
+    Args:
+        chain: gemmi Chain object (e.g., structure[0]["A"])
+        hotspots: optional list of 0-indexed residue numbers to mark as hotspots
+
+    Returns:
+        TargetCond with all coordinates in Angstroms (centered on CA COM).
+    """
+    coords, amask, seq, n = load_target(chain)
+    sc = compute_target_sidechain_feat(coords, amask, seq)
+    tor = compute_target_torsion_feat(coords)
+
+    hotspot_mask = None
+    if hotspots is not None:
+        h = np.zeros(n, dtype=bool)
+        for idx in hotspots:
+            if 0 <= idx < n:
+                h[idx] = True
+        hotspot_mask = jnp.array(h)
+
+    return TargetCond(
+        coords=jnp.array(coords),
+        atom_mask=jnp.array(amask),
+        seq=jnp.array(seq),
+        seq_mask=jnp.ones(n, dtype=jnp.bool_),
+        hotspot_mask=hotspot_mask,
+        sidechain_feat=jnp.array(sc),
+        torsion_feat=jnp.array(tor),
+    )
 
 
 def make_structure(chains) -> gemmi.Structure:

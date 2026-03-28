@@ -69,7 +69,8 @@ class DecoderSeqFeatures(eqx.Module):
 
     def __call__(self, batch: DecoderBatch):
         mask = batch.mask.astype(jnp.float32)
-        feats = jnp.concatenate([batch.ca_coors_nm, batch.z_latent], axis=-1)
+        ca_nm = batch.ca_coors * 0.1
+        feats = jnp.concatenate([ca_nm, batch.z_latent], axis=-1)
         return self.linear(feats * mask[..., None]) * mask[..., None]
 
 
@@ -78,11 +79,11 @@ class DecoderPairFeatures(eqx.Module):
     seq_sep_dim: int = 127
 
     def __call__(self, batch: DecoderBatch):
-        n = batch.ca_coors_nm.shape[0]
+        n = batch.ca_coors.shape[0]
         mask = batch.mask.astype(jnp.float32)
         pair_mask = mask[None, :] * mask[:, None]
         sep = relative_seq_sep(n, self.seq_sep_dim)
-        dists = bin_pairwise_distances(batch.ca_coors_nm, 0.1, 3.0, 30)
+        dists = bin_pairwise_distances(batch.ca_coors * 0.1, 0.1, 3.0, 30)
         feats = jnp.concatenate([sep, dists], axis=-1)
         return self.linear(feats * pair_mask[..., None]) * pair_mask[..., None]
 
@@ -99,11 +100,12 @@ class EncoderSeqFeatures(eqx.Module):
         chain_break = jnp.zeros((n, 1))
         aatype = jax.nn.one_hot(batch.residue_type * mask.astype(jnp.int32), 20) * mask[..., None]
 
-        c_abs = batch.coords_nm * batch.coord_mask[..., None]
+        coords_nm = batch.coords * 0.1
+        c_abs = coords_nm * batch.coord_mask[..., None]
         abs_feat = jnp.concatenate([rearrange(c_abs, "n a t -> n (a t)"), batch.coord_mask], axis=-1)
 
-        ca = batch.coords_nm[:, 1, :]
-        c_rel = (batch.coords_nm - ca[:, None, :]) * batch.coord_mask[..., None]
+        ca = coords_nm[:, 1, :]
+        c_rel = (coords_nm - ca[:, None, :]) * batch.coord_mask[..., None]
         rel_feat = jnp.concatenate([rearrange(c_rel, "n a t -> n (a t)"), batch.coord_mask], axis=-1)
 
         N, CA, C = batch.coords[:, 0], batch.coords[:, 1], batch.coords[:, 2]
@@ -129,11 +131,12 @@ class EncoderPairFeatures(eqx.Module):
 
         sep = relative_seq_sep(n, 127)
 
-        CA_i = batch.coords_nm[:, 1, :][:, None, :]
+        coords_nm = batch.coords * 0.1
+        CA_i = coords_nm[:, 1, :][:, None, :]
         dist = lambda v: jnp.sqrt(jnp.sum(jnp.square(CA_i - v[None, :, :]), axis=-1) + 1e-10)
         d_bins = jnp.linspace(0.1, 2.0, 20)
         bb_dists = jnp.concatenate([
-            bin_and_one_hot(dist(batch.coords_nm[:, i, :]), d_bins) for i in range(4)
+            bin_and_one_hot(dist(coords_nm[:, i, :]), d_bins) for i in range(4)
         ], axis=-1)
         bb_dists = bb_dists.at[..., 63:84].multiply(has_cb[None, :, None])  # zero CB dists for glycine
         bb_dists = bb_dists * pair_mask[..., None]
@@ -258,11 +261,12 @@ class TargetConcatFeatures(eqx.Module):
             return jnp.zeros((0, self.linear.weight.shape[0])), jnp.zeros((0,), dtype=jnp.bool_)
 
         tgt = batch.target
-        c_abs = tgt.coords * tgt.atom_mask[..., None]
+        tgt_nm = tgt.coords * 0.1
+        c_abs = tgt_nm * tgt.atom_mask[..., None]
         abs_feat = jnp.concatenate([rearrange(c_abs, "n a t -> n (a t)"), tgt.atom_mask], axis=-1)
 
-        ca = tgt.coords[:, 1, :]
-        c_rel = (tgt.coords - ca[:, None, :]) * tgt.atom_mask[..., None]
+        ca = tgt_nm[:, 1, :]
+        c_rel = (tgt_nm - ca[:, None, :]) * tgt.atom_mask[..., None]
         rel_feat = jnp.concatenate([rearrange(c_rel, "n a t -> n (a t)"), tgt.atom_mask], axis=-1)
 
         seq_oh = jax.nn.one_hot(tgt.seq * tgt.seq_mask.astype(jnp.int32), 20) * tgt.seq_mask[..., None]

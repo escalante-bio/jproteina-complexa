@@ -8,19 +8,17 @@ Usage:
 import argparse
 import os
 import time
-import sys
 
 import gemmi
 import numpy as np
 import jax
 import jax.numpy as jnp
 import equinox as eqx
-from jproteina_complexa.constants import AA_CODES, AA_3LETTER, ATOM_NAMES
-from jproteina_complexa.pdb import load_target, make_structure
+from jproteina_complexa.constants import AA_CODES, AA_3LETTER
+from jproteina_complexa.pdb import load_target, load_target_cond, make_structure
 from jproteina_complexa.hub import load_denoiser, load_decoder
-from jproteina_complexa.flow_matching import generate, PRODUCTION_SAMPLING
-from jproteina_complexa.types import DecoderBatch, TargetCond
-from jproteina_complexa.target_features import compute_target_sidechain_feat, compute_target_torsion_feat
+from jproteina_complexa.flow_matching import generate
+from jproteina_complexa.types import DecoderBatch
 
 
 def main():
@@ -47,11 +45,15 @@ def main():
     print(f"Loading target: {args.target}")
     structure = gemmi.read_structure(args.target)
     chain = structure[0][args.chain] if args.chain else structure[0][0]
-    target_coords, target_amask, target_seq, n_target = load_target(chain)
-    target_nm = target_coords / 10.0
-    target_sc = compute_target_sidechain_feat(target_coords, target_amask, target_seq)
-    target_tor = compute_target_torsion_feat(target_coords)
-    print(f"  {n_target} residues")
+
+    hotspots = None
+    if args.hotspots:
+        hotspots = [int(x.strip()) - 1 for x in args.hotspots.split(",")]
+        print(f"  Hotspots: {len(hotspots)} residues ({args.hotspots})")
+
+    target = load_target_cond(chain, hotspots=hotspots)
+    target_coords, target_amask, target_seq = np.array(target.coords), np.array(target.atom_mask), np.array(target.seq)
+    print(f"  {len(target_seq)} residues")
 
     # Load models (download from HuggingFace if needed)
     print("Loading models...")
@@ -64,33 +66,12 @@ def main():
     LATENT_DIM = 8
     mask = jnp.ones(args.length, dtype=jnp.bool_)
 
-    # Hotspot mask: sparse (matching training distribution of 0-6 hotspots)
-    hotspot_mask = np.zeros(n_target, dtype=bool)
-    if args.hotspots:
-        for idx in args.hotspots.split(","):
-            resnum = int(idx.strip()) - 1  # 1-indexed to 0-indexed
-            if 0 <= resnum < n_target:
-                hotspot_mask[resnum] = True
-        print(f"  Hotspots: {hotspot_mask.sum()} residues ({args.hotspots})")
-    else:
-        print(f"  Hotspots: none (use --hotspots to specify)")
-
-    target = TargetCond(
-        coords=jnp.array(target_nm),
-        atom_mask=jnp.array(target_amask),
-        seq=jnp.array(target_seq),
-        seq_mask=jnp.ones(n_target, dtype=jnp.bool_),
-        hotspot_mask=jnp.array(hotspot_mask),
-        sidechain_feat=jnp.array(target_sc),
-        torsion_feat=jnp.array(target_tor),
-    )
-
     def _run_single(denoiser, decoder, key):
         x_bb, x_lat = generate(
             model=denoiser, mask=mask, n_residues=args.length, latent_dim=LATENT_DIM,
             key=key, nsteps=args.steps, self_cond=not args.no_self_cond, target=target,
         )
-        dec_out = decoder(DecoderBatch(z_latent=x_lat, ca_coors_nm=x_bb, mask=mask))
+        dec_out = decoder(DecoderBatch(z_latent=x_lat, ca_coors=x_bb, mask=mask))
         return x_bb, dec_out
 
     B = args.batch
@@ -108,7 +89,7 @@ def main():
 
     print(f"Generating {N} x {args.length}-residue binders ({n_rounds} rounds of {B}, {args.steps} steps, seed={args.seed})...")
     target_resnames = [AA_3LETTER[AA_CODES[i]] for i in target_seq]
-    target_ca = target_nm[:, 1, :] * 10.0
+    target_ca = target_coords[:, 1, :]
     all_keys = jax.random.split(jax.random.PRNGKey(args.seed), N)
     sample_idx = 0
     round_times = []
@@ -117,7 +98,7 @@ def main():
         round_keys = all_keys[ri * B : (ri + 1) * B]
         t0 = time.perf_counter()
         x_bb, dec_out = _run(denoiser, decoder, round_keys)
-        jax.block_until_ready(dec_out.coors_nm)
+        jax.block_until_ready(dec_out.coors)
         gen_time = time.perf_counter() - t0
         round_times.append(gen_time)
         print(f"\n  Round {ri+1}/{n_rounds}: {gen_time:.1f}s ({gen_time / args.steps * 1000:.0f}ms/step)")
@@ -127,7 +108,7 @@ def main():
             do_i = jax.tree.map(lambda x: x[bi] if B > 1 else x, dec_out)
 
             pred_seq = "".join(AA_CODES[i] for i in np.array(do_i.aatype))
-            pred_coors = np.array(do_i.coors_nm) * 10.0
+            pred_coors = np.array(do_i.coors)
             pred_amask = np.array(do_i.atom_mask).astype(np.float32)
             binder_resnames = [AA_3LETTER[aa] for aa in pred_seq]
 
@@ -138,7 +119,7 @@ def main():
             ])
             structure.write_pdb(out_path)
 
-            binder_ca = np.array(bb_i) * 10.0
+            binder_ca = np.array(bb_i)
             ca_dists = np.linalg.norm(np.diff(binder_ca, axis=0), axis=1)
             min_dists = np.min(np.linalg.norm(binder_ca[:, None] - target_ca[None], axis=-1), axis=1)
 

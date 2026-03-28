@@ -186,7 +186,7 @@ def generate(
         target: TargetCond or None
 
     Returns:
-        (bb_ca [n, 3], local_latents [n, latent_dim])
+        (bb_ca [n, 3] in Angstroms, local_latents [n, latent_dim])
     """
     from jproteina_complexa.types import DenoiserBatch, NoisyState, Timesteps
 
@@ -234,4 +234,4 @@ def generate(
     scan_inputs = (ts_bb[:-1], ts_bb[1:], ts_lat[:-1], ts_lat[1:])
 
     final, _ = jax.lax.scan(step_fn, init, scan_inputs)
-    return final.x_bb, final.x_lat
+    return final.x_bb * 10.0, final.x_lat

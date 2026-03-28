@@ -71,7 +71,7 @@ from jproteina_complexa.types import DecoderBatch
 
 jax_input = DecoderBatch(
     z_latent=jnp.array(test_data["input"]["z_latent"].numpy()),
-    ca_coors_nm=jnp.array(test_data["input"]["ca_coors_nm"].numpy()),
+    ca_coors=jnp.array(test_data["input"]["ca_coors_nm"].numpy()) * 10.0,  # API expects Angstroms
     mask=jnp.array(test_data["input"]["mask"].numpy()),
 )
 
@@ -143,7 +143,7 @@ with jax.default_matmul_precision("float32"):
 
 pt_output = test_data["output"]
 check("seq_logits", jax_output.seq_logits, pt_output["seq_logits"], atol=1e-4)
-check("coors_nm", jax_output.coors_nm, pt_output["coors_nm"], atol=1e-4)
+check("coors", jax_output.coors, pt_output["coors_nm"] * 10.0, atol=1e-3)  # JAX returns Å, PT returns nm
 check("aatype", jax_output.aatype, pt_output["aatype_max"], atol=0)
 check("atom_mask", jax_output.atom_mask, pt_output["atom_mask"])
 
@@ -157,6 +157,6 @@ def run_decoder(model, batch):
 
 jit_output = run_decoder(jax_decoder, jax_input)
 check("jit seq_logits", jit_output.seq_logits, pt_output["seq_logits"], atol=1e-4)
-check("jit coors_nm", jit_output.coors_nm, pt_output["coors_nm"], atol=1e-4)
+check("jit coors", jit_output.coors, pt_output["coors_nm"] * 10.0, atol=1e-3)
 
 print("\nDone!")

@@ -114,8 +114,8 @@ gen_time = time.perf_counter() - t0
 print(f"  Generation: {gen_time:.1f}s")
 
 # Decode
-dec_out = step_decoder(decoder, DecoderBatch(z_latent=x_lat, ca_coors_nm=x_bb, mask=mask))
-jax.block_until_ready(dec_out.coors_nm)
+dec_out = step_decoder(decoder, DecoderBatch(z_latent=x_lat, ca_coors=x_bb, mask=mask))
+jax.block_until_ready(dec_out.coors)
 
 # Verify
 AA_CODES = "ACDEFGHIKLMNPQRSTVWY"
