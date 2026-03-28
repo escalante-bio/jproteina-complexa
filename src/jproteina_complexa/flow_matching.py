@@ -149,16 +149,99 @@ PRODUCTION_SAMPLING = SamplingConfig(
 )
 
 
-# ---- Generation ----
+# ---- Denoising state and step primitive ----
 
-class _ScanState(eqx.Module):
-    """Carry for the generation scan loop."""
-    x_bb: jax.Array
-    x_lat: jax.Array
-    x_sc_bb: jax.Array
-    x_sc_lat: jax.Array
-    key: jax.Array
+class DenoiseState(eqx.Module):
+    """Denoising trajectory state (all internal, nanometers)."""
+    bb: jax.Array       # backbone CA  [N, 3]
+    lat: jax.Array      # latents      [N, D]
+    sc_bb: jax.Array    # self-cond backbone  [N, 3]
+    sc_lat: jax.Array   # self-cond latents   [N, D]
+    key: jax.Array      # PRNG key
 
+
+def denoise_steps(
+    model,
+    state: DenoiseState,
+    mask,
+    cfg: SamplingConfig,
+    ts_bb,
+    ts_lat,
+    start,
+    end,
+    target=None,
+) -> DenoiseState:
+    """Run denoising from step *start* to *end* (exclusive).
+
+    This is the shared primitive used by both :func:`generate` and
+    external search algorithms (beam search, MCTS, etc.).
+
+    All coordinates are in **nanometers** (the internal flow matching
+    representation).  Callers that need Angstroms should convert at
+    their own boundary.
+
+    *start* and *end* may be dynamic JAX integers so that different
+    step ranges reuse the same compiled trace.
+
+    Args:
+        model: denoiser, called as ``model(DenoiserBatch) -> DenoiserOutput``
+        state: current DenoiseState (unbatched — vmap externally for batching)
+        mask: [n] boolean residue mask
+        cfg: SamplingConfig
+        ts_bb: backbone time schedule [nsteps+1]
+        ts_lat: latent time schedule [nsteps+1]
+        start: first step index (inclusive)
+        end: last step index (exclusive)
+        target: TargetCond or None
+
+    Returns:
+        Updated DenoiseState.
+    """
+    from jproteina_complexa.types import DenoiserBatch, NoisyState, Timesteps
+
+    self_cond = cfg.self_cond
+    mask_f = mask.astype(jnp.float32)
+
+    def cond(carry):
+        _, i = carry
+        return i < end
+
+    def body(carry):
+        state, i = carry
+        t_bb, t_lat = ts_bb[i], ts_lat[i]
+        dt_bb, dt_lat = ts_bb[i + 1] - t_bb, ts_lat[i + 1] - t_lat
+
+        out = model(DenoiserBatch(
+            x_t=NoisyState(bb_ca=state.bb, local_latents=state.lat),
+            t=Timesteps(bb_ca=t_bb, local_latents=t_lat),
+            mask=mask,
+            x_sc=NoisyState(bb_ca=state.sc_bb, local_latents=state.sc_lat) if self_cond else None,
+            target=target,
+        ))
+
+        sc_bb = predict_x1_from_v(state.bb, out.bb_ca, t_bb) if self_cond else state.sc_bb
+        sc_lat = predict_x1_from_v(state.lat, out.local_latents, t_lat) if self_cond else state.sc_lat
+
+        key, k_bb, k_lat = jax.random.split(state.key, 3)
+        bb = cfg.bb_ca.step(state.bb, out.bb_ca, t_bb, dt_bb, mask_f, k_bb)
+        lat = cfg.local_latents.step(state.lat, out.local_latents, t_lat, dt_lat, mask_f, k_lat)
+
+        return DenoiseState(bb=bb, lat=lat, sc_bb=sc_bb, sc_lat=sc_lat, key=key), i + 1
+
+    state, _ = jax.lax.while_loop(cond, body, (state, start))
+    return state
+
+
+def init_noise(key, n_residues, latent_dim, mask, cfg):
+    """Sample initial noise and return a DenoiseState ready for denoise_steps."""
+    mask_f = mask.astype(jnp.float32)
+    key, k1, k2 = jax.random.split(key, 3)
+    bb = sample_noise(k1, (n_residues, 3), mask_f, zero_com=cfg.bb_ca.zero_com)
+    lat = sample_noise(k2, (n_residues, latent_dim), mask_f, zero_com=cfg.local_latents.zero_com)
+    return DenoiseState(bb=bb, lat=lat, sc_bb=jnp.zeros_like(bb), sc_lat=jnp.zeros_like(lat), key=key)
+
+
+# ---- High-level generation ----
 
 def generate(
     model,
@@ -188,50 +271,14 @@ def generate(
     Returns:
         (bb_ca [n, 3] in Angstroms, local_latents [n, latent_dim])
     """
-    from jproteina_complexa.types import DenoiserBatch, NoisyState, Timesteps
-
     cfg = cfg or PRODUCTION_SAMPLING
     nsteps = nsteps if nsteps is not None else cfg.nsteps
-    self_cond = self_cond if self_cond is not None else cfg.self_cond
-
-    mask_f = mask.astype(jnp.float32)
 
     ts_bb = cfg.bb_ca.time_schedule(nsteps)
     ts_lat = cfg.local_latents.time_schedule(nsteps)
 
-    key, k1, k2 = jax.random.split(key, 3)
-    x_bb = sample_noise(k1, (n_residues, 3), mask_f, zero_com=cfg.bb_ca.zero_com)
-    x_lat = sample_noise(k2, (n_residues, latent_dim), mask_f, zero_com=cfg.local_latents.zero_com)
-
-    def step_fn(state, ts):
-        t_bb, t_bb_next, t_lat, t_lat_next = ts
-
-        batch = DenoiserBatch(
-            x_t=NoisyState(bb_ca=state.x_bb, local_latents=state.x_lat),
-            t=Timesteps(bb_ca=t_bb, local_latents=t_lat),
-            mask=mask,
-            x_sc=NoisyState(bb_ca=state.x_sc_bb, local_latents=state.x_sc_lat) if self_cond else None,
-            target=target,
-        )
-
-        out = model(batch)
-        v_bb, v_lat = out.bb_ca, out.local_latents
-
-        x_sc_bb = predict_x1_from_v(state.x_bb, v_bb, t_bb) if self_cond else state.x_sc_bb
-        x_sc_lat = predict_x1_from_v(state.x_lat, v_lat, t_lat) if self_cond else state.x_sc_lat
-
-        key, k_bb, k_lat = jax.random.split(state.key, 3)
-        x_bb = cfg.bb_ca.step(state.x_bb, v_bb, t_bb, t_bb_next - t_bb, mask_f, k_bb)
-        x_lat = cfg.local_latents.step(state.x_lat, v_lat, t_lat, t_lat_next - t_lat, mask_f, k_lat)
-
-        return _ScanState(x_bb=x_bb, x_lat=x_lat, x_sc_bb=x_sc_bb, x_sc_lat=x_sc_lat, key=key), None
-
-    init = _ScanState(
-        x_bb=x_bb, x_lat=x_lat,
-        x_sc_bb=jnp.zeros_like(x_bb), x_sc_lat=jnp.zeros_like(x_lat),
-        key=key,
-    )
-    scan_inputs = (ts_bb[:-1], ts_bb[1:], ts_lat[:-1], ts_lat[1:])
-
-    final, _ = jax.lax.scan(step_fn, init, scan_inputs)
-    return final.x_bb * 10.0, final.x_lat
+    state = init_noise(key, n_residues, latent_dim, mask, cfg)
+    if self_cond is not None:
+        cfg = eqx.tree_at(lambda c: c.self_cond, cfg, self_cond)
+    state = denoise_steps(model, state, mask, cfg, ts_bb, ts_lat, jnp.int32(0), jnp.int32(nsteps), target)
+    return state.bb * 10.0, state.lat
