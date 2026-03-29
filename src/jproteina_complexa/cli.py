@@ -15,7 +15,7 @@ import jax
 import jax.numpy as jnp
 import equinox as eqx
 from jproteina_complexa.constants import AA_CODES, AA_3LETTER
-from jproteina_complexa.pdb import load_target, load_target_cond, make_structure
+from jproteina_complexa.pdb import load_target_cond, make_structure
 from jproteina_complexa.hub import load_denoiser, load_decoder
 from jproteina_complexa.flow_matching import generate
 from jproteina_complexa.types import DecoderBatch
@@ -63,12 +63,11 @@ def main():
     decoder = load_decoder(**kwargs)
     print(f"  Loaded in {time.perf_counter() - t0:.1f}s")
 
-    LATENT_DIM = 8
     mask = jnp.ones(args.length, dtype=jnp.bool_)
 
     def _run_single(denoiser, decoder, key):
         x_bb, x_lat = generate(
-            model=denoiser, mask=mask, n_residues=args.length, latent_dim=LATENT_DIM,
+            model=denoiser, mask=mask,
             key=key, nsteps=args.steps, self_cond=not args.no_self_cond, target=target,
         )
         dec_out = decoder(DecoderBatch(z_latent=x_lat, ca_coors=x_bb, mask=mask))

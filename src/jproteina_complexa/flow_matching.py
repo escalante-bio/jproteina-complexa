@@ -5,6 +5,7 @@ import jax.numpy as jnp
 import equinox as eqx
 from functools import partial
 from typing import Callable
+from jaxtyping import Array, Float
 
 
 # ---- Schedule functions: (nsteps: int) -> Array[nsteps+1] ----
@@ -152,12 +153,12 @@ PRODUCTION_SAMPLING = SamplingConfig(
 # ---- Denoising state and step primitive ----
 
 class DenoiseState(eqx.Module):
-    """Denoising trajectory state (all internal, nanometers)."""
-    bb: jax.Array       # backbone CA  [N, 3]
-    lat: jax.Array      # latents      [N, D]
-    sc_bb: jax.Array    # self-cond backbone  [N, 3]
-    sc_lat: jax.Array   # self-cond latents   [N, D]
-    key: jax.Array      # PRNG key
+    """Denoising trajectory state (all coordinates in nanometers)."""
+    bb: Float[Array, "N 3"]       # backbone CA (nm)
+    lat: Float[Array, "N D"]      # local latents
+    sc_bb: Float[Array, "N 3"]    # self-cond backbone (nm)
+    sc_lat: Float[Array, "N D"]   # self-cond latents
+    key: jax.Array                # PRNG key
 
 
 def denoise_steps(
@@ -232,8 +233,9 @@ def denoise_steps(
     return state
 
 
-def init_noise(key, n_residues, latent_dim, mask, cfg):
+def init_noise(key, latent_dim, mask, cfg):
     """Sample initial noise and return a DenoiseState ready for denoise_steps."""
+    n_residues = mask.shape[-1]
     mask_f = mask.astype(jnp.float32)
     key, k1, k2 = jax.random.split(key, 3)
     bb = sample_noise(k1, (n_residues, 3), mask_f, zero_com=cfg.bb_ca.zero_com)
@@ -246,8 +248,6 @@ def init_noise(key, n_residues, latent_dim, mask, cfg):
 def generate(
     model,
     mask,
-    n_residues: int,
-    latent_dim: int,
     key,
     *,
     cfg: SamplingConfig | None = None,
@@ -260,8 +260,6 @@ def generate(
     Args:
         model: the denoiser (LocalLatentsTransformer), called as model(DenoiserBatch)
         mask: [n] boolean residue mask
-        n_residues: number of binder residues
-        latent_dim: dimension of latent space
         key: PRNG key
         cfg: sampling config (defaults to PRODUCTION_SAMPLING)
         nsteps: override cfg.nsteps
@@ -277,7 +275,8 @@ def generate(
     ts_bb = cfg.bb_ca.time_schedule(nsteps)
     ts_lat = cfg.local_latents.time_schedule(nsteps)
 
-    state = init_noise(key, n_residues, latent_dim, mask, cfg)
+    latent_dim = model.seq_features.latent_dim
+    state = init_noise(key, latent_dim, mask, cfg)
     if self_cond is not None:
         cfg = eqx.tree_at(lambda c: c.self_cond, cfg, self_cond)
     state = denoise_steps(model, state, mask, cfg, ts_bb, ts_lat, jnp.int32(0), jnp.int32(nsteps), target)

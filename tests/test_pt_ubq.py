@@ -124,7 +124,6 @@ target_jax = TargetCond(
     coords=jnp.array(tgt_data["coords"] / 10.0)[None],
     atom_mask=jnp.array(tgt_data["coord_mask"])[None],
     seq=jnp.array(tgt_data["seq"])[None],
-    seq_mask=jnp.ones((1, N_t), dtype=jnp.bool_),
     hotspot_mask=jnp.ones((1, N_t), dtype=jnp.bool_),
     sidechain_feat=jnp.array(tgt_data["sidechain_feat"])[None],
     torsion_feat=jnp.array(tgt_data["torsion_feat"])[None],

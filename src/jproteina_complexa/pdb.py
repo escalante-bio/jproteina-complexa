@@ -12,11 +12,10 @@ from jproteina_complexa.target_features import compute_target_sidechain_feat, co
 def load_target(chain: gemmi.Chain, center: bool = True):
     """Extract target protein arrays from a gemmi Chain.
 
-    Returns (coords, mask, seq, n) where:
+    Returns (coords, mask, seq) where:
         coords: [n, 37, 3] float32 atom coordinates in Angstroms (centered on CA COM if center=True)
         mask:   [n, 37]    float32 atom presence mask
         seq:    [n]        int64   residue type indices (0-19)
-        n:      int        number of residues
     """
     polymer = chain.get_polymer()
     n = len(polymer)
@@ -41,7 +40,7 @@ def load_target(chain: gemmi.Chain, center: bool = True):
         com = (ca_coords * ca_mask[:, None]).sum(0) / max(ca_mask.sum(), 1)
         coords = coords - com[None, None, :]
 
-    return coords, mask, seq, n
+    return coords, mask, seq
 
 
 def load_target_cond(chain: gemmi.Chain, hotspots: list[int] | None = None) -> TargetCond:
@@ -54,7 +53,8 @@ def load_target_cond(chain: gemmi.Chain, hotspots: list[int] | None = None) -> T
     Returns:
         TargetCond with all coordinates in Angstroms (centered on CA COM).
     """
-    coords, amask, seq, n = load_target(chain)
+    coords, amask, seq = load_target(chain)
+    n = len(seq)
     sc = compute_target_sidechain_feat(coords, amask, seq)
     tor = compute_target_torsion_feat(coords)
 
@@ -70,7 +70,6 @@ def load_target_cond(chain: gemmi.Chain, hotspots: list[int] | None = None) -> T
         coords=jnp.array(coords),
         atom_mask=jnp.array(amask),
         seq=jnp.array(seq),
-        seq_mask=jnp.ones(n, dtype=jnp.bool_),
         hotspot_mask=hotspot_mask,
         sidechain_feat=jnp.array(sc),
         torsion_feat=jnp.array(tor),

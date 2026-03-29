@@ -12,7 +12,7 @@ from jaxtyping import Array, Float, Bool, Int
 # ---- Noisy state (used by denoiser, internal to flow matching — nm) ----
 
 class NoisyState(eqx.Module):
-    bb_ca: Float[Array, "N 3"]
+    bb_ca: Float[Array, "N 3"]            # nm
     local_latents: Float[Array, "N D"]
 
 
@@ -27,7 +27,6 @@ class TargetCond(eqx.Module):
     coords: Float[Array, "Nt 37 3"]       # target atom coords (Angstroms)
     atom_mask: Float[Array, "Nt 37"]       # target atom mask
     seq: Int[Array, "Nt"]                  # target residue types
-    seq_mask: Bool[Array, "Nt"]            # target residue mask
     hotspot_mask: Bool[Array, "Nt"] | None = None
     sidechain_feat: Float[Array, "Nt 88"] | None = None
     torsion_feat: Float[Array, "Nt 63"] | None = None
@@ -74,5 +73,5 @@ class EncoderOutput(eqx.Module):
 
 
 class DenoiserOutput(eqx.Module):
-    bb_ca: Float[Array, "N 3"]
-    local_latents: Float[Array, "N D"]
+    bb_ca: Float[Array, "N 3"]             # velocity field (nm)
+    local_latents: Float[Array, "N D"]     # velocity field

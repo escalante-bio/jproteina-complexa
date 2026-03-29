@@ -53,7 +53,8 @@ from jproteina_complexa.pdb import load_target
 from jproteina_complexa.constants import RESTYPE_ATOM37_MASK
 
 _chain = gemmi.read_structure("/tmp/pdb/pdb1crn.ent")[0][0]
-target_a37, target_a37_mask, target_seq_idx, N_target = load_target(_chain, center=False)
+target_a37, target_a37_mask, target_seq_idx = load_target(_chain, center=False)
+N_target = len(target_seq_idx)
 
 print(f"  Target: {N_target} residues")
 
@@ -67,7 +68,6 @@ target = TargetCond(
     coords=jnp.array(target_a37 / 10.0)[None],
     atom_mask=jnp.array(target_a37_mask)[None],
     seq=jnp.array(target_seq_idx)[None],
-    seq_mask=jnp.ones((B, N_target), dtype=jnp.bool_),
     hotspot_mask=jnp.ones((B, N_target), dtype=jnp.bool_),
 )
 

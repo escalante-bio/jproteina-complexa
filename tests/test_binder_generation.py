@@ -11,7 +11,7 @@ import equinox as eqx
 from jproteina_complexa.pdb import load_target
 
 from jproteina_complexa.serialization import load_model
-from jproteina_complexa.flow_matching import generate, PRODUCTION_SAMPLING, get_schedule
+from jproteina_complexa.flow_matching import generate, PRODUCTION_SAMPLING, log_schedule, power_schedule
 from jproteina_complexa.types import DecoderBatch, TargetCond
 from jproteina_complexa.constants import RESTYPE_ATOM37_MASK
 
@@ -22,7 +22,8 @@ print("=" * 70)
 # ---- Load target protein ----
 print("\nLoading target (crambin, PDB 1CRN)...")
 _chain = gemmi.read_structure("/tmp/pdb/pdb1crn.ent")[0][0]
-target_a37, target_a37_mask, target_seq_idx, N_target = load_target(_chain)
+target_a37, target_a37_mask, target_seq_idx = load_target(_chain)
+N_target = len(target_seq_idx)
 
 AA_CODES = "ACDEFGHIKLMNPQRSTVWY"
 AA_3TO1 = {'ALA':'A','CYS':'C','ASP':'D','GLU':'E','PHE':'F','GLY':'G','HIS':'H',
@@ -43,7 +44,6 @@ print(f"  Loaded in {time.perf_counter() - t0:.1f}s")
 # ---- Generate ----
 N_binder = 50
 N_STEPS = 200
-LATENT_DIM = 8
 B = 1
 key = jax.random.PRNGKey(42)
 
@@ -53,15 +53,14 @@ target = TargetCond(
     coords=jnp.array(target_nm)[None],
     atom_mask=jnp.array(target_a37_mask)[None],
     seq=jnp.array(target_seq_idx)[None],
-    seq_mask=jnp.ones((B, N_target), dtype=jnp.bool_),
     hotspot_mask=jnp.ones((B, N_target), dtype=jnp.bool_),
 )
 
 decode = eqx.filter_jit(decoder)
 
 print(f"\nSampling {N_binder}-residue binder to {N_target}-residue target ({N_STEPS} steps)...")
-ts_bb = get_schedule("log", N_STEPS, p1=2.0)
-ts_lat = get_schedule("power", N_STEPS, p1=2.0)
+ts_bb = log_schedule(N_STEPS, p=2.0)
+ts_lat = power_schedule(N_STEPS, p=2.0)
 print(f"  bb_ca:          schedule=log(p=2), gt=1/t, mode=sc(noise=0.1)")
 print(f"  local_latents:  schedule=power(p=2), gt=tan, mode=sc(noise=0.1)")
 print(f"  Schedule at midpoint: t_bb={float(ts_bb[N_STEPS//2]):.3f}, t_lat={float(ts_lat[N_STEPS//2]):.3f}")
@@ -70,12 +69,10 @@ t_gen = time.perf_counter()
 x_bb, x_lat = generate(
     model=eqx.filter_jit(denoiser),
     mask=mask,
-    n_residues=N_binder,
-    latent_dim=LATENT_DIM,
     key=key,
     nsteps=N_STEPS,
     self_cond=True,
-    sampling=PRODUCTION_SAMPLING,
+    cfg=PRODUCTION_SAMPLING,
     target=target,
 )
 jax.block_until_ready(x_bb)

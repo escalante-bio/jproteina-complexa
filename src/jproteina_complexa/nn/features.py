@@ -269,12 +269,13 @@ class TargetConcatFeatures(eqx.Module):
         c_rel = (tgt_nm - ca[:, None, :]) * tgt.atom_mask[..., None]
         rel_feat = jnp.concatenate([rearrange(c_rel, "n a t -> n (a t)"), tgt.atom_mask], axis=-1)
 
-        seq_oh = jax.nn.one_hot(tgt.seq * tgt.seq_mask.astype(jnp.int32), 20) * tgt.seq_mask[..., None]
+        seq_oh = jax.nn.one_hot(tgt.seq, 20)
         mask_feat = tgt.atom_mask.astype(jnp.float32)
         hotspot = (tgt.hotspot_mask.astype(jnp.float32) if tgt.hotspot_mask is not None else jnp.zeros(tgt.seq.shape))[..., None]
         sc = tgt.sidechain_feat if tgt.sidechain_feat is not None else jnp.zeros((*tgt.seq.shape, 88))
         tor = tgt.torsion_feat if tgt.torsion_feat is not None else jnp.zeros((*tgt.seq.shape, 63))
 
         raw = jnp.concatenate([abs_feat, seq_oh, mask_feat, hotspot, rel_feat, sc, tor], axis=-1)
-        proj = self.ln(self.linear(raw * tgt.seq_mask[..., None]))
-        return proj * tgt.seq_mask[..., None], tgt.seq_mask
+        proj = self.ln(self.linear(raw))
+        mask = jnp.ones(tgt.seq.shape, dtype=jnp.bool_)
+        return proj, mask
