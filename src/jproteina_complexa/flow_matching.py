@@ -23,7 +23,10 @@ def power_schedule(nsteps, *, p=2.0, eps=1e-5):
 
 
 def log_schedule(nsteps, *, p=2.0, eps=1e-5):
-    return _clamp_schedule(1 - jnp.flip(jnp.logspace(-p, 0, nsteps + 1)), eps)
+    ts = 1 - jnp.flip(jnp.logspace(-p, 0, nsteps + 1))
+    ts = ts - ts.min()
+    ts = ts / ts.max()
+    return ts
 
 
 # ---- Noise injection functions: (t: Array) -> Array ----

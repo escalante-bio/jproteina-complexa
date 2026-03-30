@@ -44,6 +44,7 @@ def main():
     # Load target
     print(f"Loading target: {args.target}")
     structure = gemmi.read_structure(args.target)
+    structure.setup_entities()
     chain = structure[0][args.chain] if args.chain else structure[0][0]
 
     hotspots = None
