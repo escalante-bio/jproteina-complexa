@@ -5,7 +5,7 @@ import numpy as np
 import jax.numpy as jnp
 
 from jproteina_complexa.constants import AA_3TO1, AA_1TO_IDX, AA_3LETTER, AA_CODES, ATOM_NAMES
-from jproteina_complexa.types import TargetCond
+from jproteina_complexa.types import TargetCond, EncoderBatch
 from jproteina_complexa.target_features import compute_target_sidechain_feat, compute_target_torsion_feat
 
 
@@ -41,6 +41,33 @@ def load_target(chain: gemmi.Chain, center: bool = True):
         coords = coords - com[None, None, :]
 
     return coords, mask, seq
+
+
+def seed_from_encoder(encoder, chain: gemmi.Chain, *, center: bool = False):
+    """Encode a protein chain to a ``(ca_coords [n, 3] Angstroms, z_latent [n, D])`` seed
+    for :func:`jproteina_complexa.flow_matching.generate` — i.e. partial diffusion from an
+    existing structure via ``generate(model, mask, key, seed=..., start=...)``.
+
+    Runs the deterministic encoder on the chain's backbone + sidechains; the returned CA
+    coordinates and latent are ready to pass to ``generate`` as ``seed``.
+
+    Coordinates are encoded as loaded (``center`` is applied first). The encoder consumes
+    absolute coordinates, so this defaults to ``center=False`` to match how it is exercised
+    elsewhere (raw coordinates); if your chain sits far from the origin, pass ``center=True``.
+    The returned CA coords carry the input frame — for *unconditioned* SDEdit via ``generate``
+    you likely want them zero-COM'd to match the noise prior (see ``seed_state``).
+    """
+    coords, amask, seq = load_target(chain, center=center)
+    n = len(seq)
+    batch = EncoderBatch(
+        coords=jnp.asarray(coords),
+        coord_mask=jnp.asarray(amask),
+        residue_type=jnp.asarray(seq),
+        mask=jnp.ones(n, dtype=bool),
+        sidechain_angles_feat=jnp.asarray(compute_target_sidechain_feat(coords, amask, seq)),
+    )
+    z_latent = encoder.encode_deterministic(batch).z_latent
+    return jnp.asarray(coords[:, 1, :]), z_latent
 
 
 def load_target_cond(chain: gemmi.Chain, hotspots: list[int] | None = None) -> TargetCond:

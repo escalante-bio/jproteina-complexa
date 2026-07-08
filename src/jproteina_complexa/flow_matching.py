@@ -246,6 +246,38 @@ def init_noise(key, latent_dim, mask, cfg):
     return DenoiseState(bb=bb, lat=lat, sc_bb=jnp.zeros_like(bb), sc_lat=jnp.zeros_like(lat), key=key)
 
 
+def seed_state(key, bb, lat, mask, cfg, ts_bb, ts_lat, start):
+    """Partially-noised DenoiseState at step ``start`` from a clean ``(bb, lat)`` — the
+    SDEdit / partial-diffusion analog of :func:`init_noise`.
+
+    Builds the flow-matching forward marginal at the start step, per channel::
+
+        x = t * clean + (1 - t) * noise        t = schedule value at ``start``
+
+    so integrating :func:`denoise_steps` from ``start`` to ``nsteps`` yields a *variant* of
+    the input rather than a de-novo sample.  ``start`` near ``nsteps`` (t→1) stays close to
+    the seed; a smaller ``start`` (t→0) explores more.  ``bb`` is in **nanometers** (the
+    internal representation — multiply Ångström coordinates by 0.1); ``lat`` is a clean
+    latent (e.g. the encoder's ``z_latent``).
+
+    Frame: only the *noise* is zero-COM'd (per the channel config); the clean ``bb`` is used
+    as-is, so this preserves whatever frame you pass.  Supply a target-frame structure for
+    conditioned (docked) SDEdit, or a zero-COM structure for unconditioned single-chain SDEdit
+    to match the model's zero-COM noise prior.
+
+    Self-conditioning fields start at zero, as in :func:`init_noise`; for a mid-trajectory
+    start the model simply gets no self-cond estimate on the first step.
+    """
+    mask_f = mask.astype(jnp.float32)
+    t_bb, t_lat = ts_bb[start], ts_lat[start]
+    key, k_bb, k_lat = jax.random.split(key, 3)
+    n_bb = sample_noise(k_bb, bb.shape, mask_f, zero_com=cfg.bb_ca.zero_com)
+    n_lat = sample_noise(k_lat, lat.shape, mask_f, zero_com=cfg.local_latents.zero_com)
+    bb_t = t_bb * bb + (1.0 - t_bb) * n_bb
+    lat_t = t_lat * lat + (1.0 - t_lat) * n_lat
+    return DenoiseState(bb=bb_t, lat=lat_t, sc_bb=jnp.zeros_like(bb), sc_lat=jnp.zeros_like(lat), key=key)
+
+
 # ---- High-level generation ----
 
 def generate(
@@ -257,6 +289,8 @@ def generate(
     nsteps: int | None = None,
     self_cond: bool | None = None,
     target=None,
+    seed=None,
+    start: int = 0,
 ):
     """Generate binder structures via flow matching SDE integration.
 
@@ -268,6 +302,14 @@ def generate(
         nsteps: override cfg.nsteps
         self_cond: override cfg.self_cond
         target: TargetCond or None
+        seed: optional ``(bb_ca [n, 3] Angstroms, local_latents [n, latent_dim])`` clean
+            state to start from instead of pure noise — i.e. SDEdit / partial diffusion.
+            Typically a previous ``generate`` output, or an existing structure encoded to a
+            latent (see ``pdb.seed_from_encoder``). Requires ``start > 0`` to take effect.
+        start: first integration step. ``0`` (default) starts from pure noise (de novo) and
+            ignores ``seed``. ``start > 0`` requires ``seed`` and begins from a
+            partially-noised copy of it; larger ``start`` (closer to ``nsteps``) stays nearer
+            the seed.
 
     Returns:
         (bb_ca [n, 3] in Angstroms, local_latents [n, latent_dim])
@@ -278,9 +320,18 @@ def generate(
     ts_bb = cfg.bb_ca.time_schedule(nsteps)
     ts_lat = cfg.local_latents.time_schedule(nsteps)
 
-    latent_dim = model.seq_features.latent_dim
-    state = init_noise(key, latent_dim, mask, cfg)
     if self_cond is not None:
         cfg = eqx.tree_at(lambda c: c.self_cond, cfg, self_cond)
-    state = denoise_steps(model, state, mask, cfg, ts_bb, ts_lat, jnp.int32(0), jnp.int32(nsteps), target)
+
+    if seed is None:
+        latent_dim = model.seq_features.latent_dim
+        state = init_noise(key, latent_dim, mask, cfg)
+        start = 0
+    else:
+        if start <= 0:
+            raise ValueError("generate(seed=...) requires start > 0 (start=0 is pure noise)")
+        bb_ca, lat = seed
+        state = seed_state(key, jnp.asarray(bb_ca) * 0.1, jnp.asarray(lat), mask, cfg, ts_bb, ts_lat, start)
+
+    state = denoise_steps(model, state, mask, cfg, ts_bb, ts_lat, jnp.int32(start), jnp.int32(nsteps), target)
     return state.bb * 10.0, state.lat
