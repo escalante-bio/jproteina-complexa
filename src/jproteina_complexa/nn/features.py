@@ -163,19 +163,24 @@ class DenoiserSeqFeatures(eqx.Module):
     linear: Linear
     latent_dim: int = 8
     idx_emb_dim: int = 256
+    motif: bool = eqx.field(static=True, default=False)
 
     def __call__(self, batch: DenoiserBatch):
         mask = batch.mask.astype(jnp.float32)
         (n,) = mask.shape
         xsc_bb = batch.x_sc.bb_ca if batch.x_sc is not None else jnp.zeros((n, 3))
         xsc_lat = batch.x_sc.local_latents if batch.x_sc is not None else jnp.zeros((n, self.latent_dim))
-        idx = jnp.arange(1, n + 1, dtype=jnp.float32)
-        feats = jnp.concatenate([
+        feats = [
             batch.x_t.bb_ca, batch.x_t.local_latents, xsc_bb, xsc_lat,
-            jnp.zeros((n, 3)), jnp.zeros((n, 20)),  # optional features (disabled)
-            jnp.zeros((n, 1)),  # hotspot
-            index_embedding(idx, self.idx_emb_dim),
-        ], axis=-1)
+            jnp.zeros((n, 3)), jnp.zeros((n, 20)),  # optional in-place ca / res-type (disabled)
+            jnp.zeros((n, 1)),  # binder: hotspot / motif: chain-break (both zero here)
+        ]
+        # The binder model appends an index embedding; the motif model omits it (its
+        # feats_seq has no res_seq_pdb_idx). See configs/nn/..._unidx_motif.yaml.
+        if not self.motif:
+            idx = jnp.arange(1, n + 1, dtype=jnp.float32)
+            feats.append(index_embedding(idx, self.idx_emb_dim))
+        feats = jnp.concatenate(feats, axis=-1)
         return self.linear(feats * mask[..., None]) * mask[..., None]
 
 
@@ -196,6 +201,7 @@ class DenoiserPairFeatures(eqx.Module):
     linear: Linear
     ln: LayerNorm | Identity
     seq_sep_dim: int = 127
+    motif: bool = eqx.field(static=True, default=False)
 
     def __call__(self, batch: DenoiserBatch):
         (n,) = batch.mask.shape
@@ -206,12 +212,14 @@ class DenoiserPairFeatures(eqx.Module):
         xt_dists = bin_pairwise_distances(batch.x_t.bb_ca, 0.1, 3.0, 30)
         xsc_dists = bin_pairwise_distances(batch.x_sc.bb_ca, 0.1, 3.0, 30) if batch.x_sc is not None else jnp.zeros((n, n, 30))
 
-        feats = jnp.concatenate([
+        feats = [
             sep, xt_dists, xsc_dists,
             jnp.zeros((n, n, 30)),  # optional CA dists (disabled)
-            jnp.zeros((n, n, 1)),   # chain idx
-            jnp.zeros((n, n, 1)),   # hotspot
-        ], axis=-1)
+        ]
+        # The binder model adds chain-idx + hotspot pair channels; the motif model does not.
+        if not self.motif:
+            feats += [jnp.zeros((n, n, 1)), jnp.zeros((n, n, 1))]
+        feats = jnp.concatenate(feats, axis=-1)
         return self.ln(self.linear(feats * pair_mask[..., None])) * pair_mask[..., None]
 
 
@@ -279,3 +287,35 @@ class TargetConcatFeatures(eqx.Module):
         proj = self.ln(self.linear(raw))
         mask = jnp.ones(tgt.seq.shape, dtype=jnp.bool_)
         return proj, mask
+
+
+# ---- Motif concat features (protein motif scaffolding) ----
+
+class MotifConcatFeatures(eqx.Module):
+    """Projects fixed protein-motif residues into extra sequence tokens.
+
+    Mirrors upstream MotifConcatSeqFeat (compact mode): the 205-dim raw feature is
+    coords_flat(111) + atom_mask(37) + residue_type_onehot(20) + motif_mask(37).
+    """
+    linear: Linear
+    ln: LayerNorm | Identity
+
+    def __call__(self, batch: DenoiserBatch):
+        """Returns (projected [Nm, dim], mask [Nm])."""
+        if batch.motif is None:
+            return jnp.zeros((0, self.linear.weight.shape[0])), jnp.zeros((0,), dtype=jnp.bool_)
+
+        m = batch.motif
+        res_mask = m.seq_motif_mask if m.seq_motif_mask is not None else jnp.ones(m.seq_motif.shape)
+        res_mask = res_mask.astype(jnp.float32)
+
+        # Atom37 coords (nm), zeroed at absent atoms, flattened + atom mask (=motif_mask).
+        coors_nm = m.x_motif * 0.1 * m.motif_mask[..., None]
+        coords_feat = jnp.concatenate([rearrange(coors_nm, "n a t -> n (a t)"), m.motif_mask], axis=-1)
+
+        seq_oh = jax.nn.one_hot((m.seq_motif * res_mask.astype(jnp.int32)), 20) * res_mask[..., None]
+        mask_feat = m.motif_mask.astype(jnp.float32)
+
+        raw = jnp.concatenate([coords_feat, seq_oh, mask_feat], axis=-1) * res_mask[..., None]
+        proj = self.ln(self.linear(raw)) * res_mask[..., None]
+        return proj, res_mask > 0

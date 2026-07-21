@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "JAX/Equinox protein binder design (Proteina-Complexa port)"
 requires-python = ">=3.12"
 dependencies = [
-    "jax[cuda12]>=0.10.0",
+    "jax>=0.10.0",
     "equinox>=0.11.0",
     "einops>=0.6",
     "jaxtyping",
@@ -14,6 +14,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# GPU support is opt-in so CPU/macOS consumers aren't forced onto CUDA-only
+# wheels: install `jproteina-complexa[cuda]` (or add `jax[cuda12]` yourself).
+cuda = ["jax[cuda12]>=0.10.0"]
 convert = [
     "torch",
     "scipy",
@@ -21,6 +24,7 @@ convert = [
     "dm-tree",
     "loguru",
     "biopython",
+    "loralib>=0.1.2",
 ]
 
 [project.scripts]
