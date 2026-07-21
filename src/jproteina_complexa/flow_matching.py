@@ -174,6 +174,7 @@ def denoise_steps(
     start,
     end,
     target=None,
+    motif=None,
 ) -> DenoiseState:
     """Run denoising from step *start* to *end* (exclusive).
 
@@ -197,6 +198,7 @@ def denoise_steps(
         start: first step index (inclusive)
         end: last step index (exclusive)
         target: TargetCond or None
+        motif: MotifCond or None (protein-motif scaffolding conditioning)
 
     Returns:
         Updated DenoiseState.
@@ -221,6 +223,7 @@ def denoise_steps(
             mask=mask,
             x_sc=NoisyState(bb_ca=state.sc_bb, local_latents=state.sc_lat) if self_cond else None,
             target=target,
+            motif=motif,
         ))
 
         sc_bb = predict_x1_from_v(state.bb, out.bb_ca, t_bb) if self_cond else state.sc_bb
@@ -257,8 +260,9 @@ def generate(
     nsteps: int | None = None,
     self_cond: bool | None = None,
     target=None,
+    motif=None,
 ):
-    """Generate binder structures via flow matching SDE integration.
+    """Generate structures via flow matching SDE integration (binder or motif scaffold).
 
     Args:
         model: the denoiser (LocalLatentsTransformer), called as model(DenoiserBatch)
@@ -268,6 +272,7 @@ def generate(
         nsteps: override cfg.nsteps
         self_cond: override cfg.self_cond
         target: TargetCond or None
+        motif: MotifCond or None (protein-motif scaffolding conditioning)
 
     Returns:
         (bb_ca [n, 3] in Angstroms, local_latents [n, latent_dim])
@@ -282,5 +287,5 @@ def generate(
     state = init_noise(key, latent_dim, mask, cfg)
     if self_cond is not None:
         cfg = eqx.tree_at(lambda c: c.self_cond, cfg, self_cond)
-    state = denoise_steps(model, state, mask, cfg, ts_bb, ts_lat, jnp.int32(0), jnp.int32(nsteps), target)
+    state = denoise_steps(model, state, mask, cfg, ts_bb, ts_lat, jnp.int32(0), jnp.int32(nsteps), target, motif)
     return state.bb * 10.0, state.lat

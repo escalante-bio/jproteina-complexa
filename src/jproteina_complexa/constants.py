@@ -22,6 +22,33 @@ ATOM_NAMES = [
     "OH", "CZ", "CZ2", "CZ3", "NZ", "OXT",
 ]
 
+# ---- Motif tip atoms (for atom_selection_mode="tip_atoms") ----
+# Functional side-chain atom names per residue; used to mask atom37 slots when
+# scaffolding a motif by its tip atoms only. Source: proteina-complexa
+# proteinfoundation/utils/constants.py SIDECHAIN_TIP_ATOMS.
+SIDECHAIN_TIP_ATOMS = {
+    "ALA": ["CA", "CB"],
+    "ARG": ["CD", "CZ", "NE", "NH1", "NH2"],
+    "ASP": ["CB", "CG", "OD1", "OD2"],
+    "ASN": ["CB", "CG", "ND2", "OD1"],
+    "CYS": ["CA", "CB", "SG"],
+    "GLU": ["CG", "CD", "OE1", "OE2"],
+    "GLN": ["CG", "CD", "NE2", "OE1"],
+    "GLY": [],
+    "HIS": ["CB", "CG", "CD2", "CE1", "ND1", "NE2"],
+    "ILE": ["CB", "CG1", "CG2", "CD1"],
+    "LEU": ["CB", "CG", "CD1", "CD2"],
+    "LYS": ["CE", "NZ"],
+    "MET": ["CG", "CE", "SD"],
+    "PHE": ["CB", "CG", "CD1", "CD2", "CE1", "CE2", "CZ"],
+    "PRO": ["CA", "CB", "CG", "CD", "N"],
+    "SER": ["CA", "CB", "OG"],
+    "THR": ["CA", "CB", "CG2", "OG1"],
+    "TRP": ["CB", "CG", "CD1", "CD2", "CE2", "CE3", "CZ2", "CZ3", "CH2", "NE1"],
+    "TYR": ["CB", "CG", "CD1", "CD2", "CE1", "CE2", "CZ", "OH"],
+    "VAL": ["CB", "CG1", "CG2"],
+}
+
 # ---- Residue-atom mask ----
 
 # Which of the 37 atom types exist for each of the 21 residue types (20 AA + unknown).

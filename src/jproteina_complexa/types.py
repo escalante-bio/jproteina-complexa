@@ -32,6 +32,22 @@ class TargetCond(eqx.Module):
     torsion_feat: Float[Array, "Nt 63"] | None = None
 
 
+# ---- Motif conditioning (protein motif scaffolding, no ligand) ----
+
+class MotifCond(eqx.Module):
+    """Fixed protein-motif residues, injected as extra sequence tokens.
+
+    Compact representation: only the Nm motif residues are provided (already
+    extracted from the source structure). The motif conditions generation purely
+    through the appended sequence tokens; it adds nothing to the pair rep (the
+    upstream motif pair features are multiplied by zero — see models.py).
+    """
+    x_motif: Float[Array, "Nm 37 3"]        # motif atom coords (Angstroms)
+    motif_mask: Float[Array, "Nm 37"]        # per-atom mask (which atom37 slots are present)
+    seq_motif: Int[Array, "Nm"]              # motif residue types (0..19)
+    seq_motif_mask: Float[Array, "Nm"] | None = None  # per-residue validity (defaults to ones)
+
+
 # ---- Input types ----
 
 class DecoderBatch(eqx.Module):
@@ -54,6 +70,7 @@ class DenoiserBatch(eqx.Module):
     mask: Bool[Array, "N"]
     x_sc: NoisyState | None = None
     target: TargetCond | None = None
+    motif: MotifCond | None = None
 
 
 # ---- Output types ----

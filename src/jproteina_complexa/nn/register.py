@@ -21,6 +21,7 @@ import proteinfoundation.nn.modules.attn_n_transition as _tf
 import proteinfoundation.partial_autoencoder.decoder as _dec
 import proteinfoundation.partial_autoencoder.encoder as _enc
 import proteinfoundation.nn.local_latents_transformer as _llt
+import proteinfoundation.nn.local_latents_transformer_v2 as _llt2
 
 from_torch.register(_sw.SwiGLU, lambda _: SwiGLU())
 from_torch.register(_ad.AdaptiveLayerNorm, AdaptiveLayerNorm.from_torch)
@@ -33,3 +34,5 @@ from_torch.register(_tf.MultiheadAttnAndTransition, MultiheadAttnAndTransition.f
 from_torch.register(_dec.DecoderTransformer, DecoderTransformer.from_torch)
 from_torch.register(_enc.EncoderTransformer, EncoderTransformer.from_torch)
 from_torch.register(_llt.LocalLatentsTransformer, LocalLatentsTransformer.from_torch)
+# v2 arch (motif / ligand models) — identical trunk, different concat factories.
+from_torch.register(_llt2.LocalLatentsTransformer, LocalLatentsTransformer.from_torch)
