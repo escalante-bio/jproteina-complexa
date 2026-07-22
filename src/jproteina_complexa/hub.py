@@ -26,19 +26,24 @@ def ensure_weights(cache_dir: str = DEFAULT_CACHE, models: tuple[str, ...] = _MO
                 hf_hub_download(HF_REPO, f"{name}{ext}", local_dir=cache_dir)
 
 
-def load_denoiser(cache_dir: str = DEFAULT_CACHE):
-    """Load the denoiser (LocalLatentsTransformer), downloading if needed."""
-    ensure_weights(cache_dir, models=("denoiser",))
-    return load_model(os.path.join(cache_dir, "denoiser"))
+def load_denoiser(cache_dir: str = DEFAULT_CACHE, name: str = "denoiser"):
+    """Load a denoiser (LocalLatentsTransformer), downloading if needed.
+
+    ``name`` selects the variant, e.g. "denoiser" (binder) or "denoiser_motif"
+    (protein-motif scaffolding). Motif weights are currently local-only; pass a
+    ``cache_dir`` that already contains them.
+    """
+    ensure_weights(cache_dir, models=(name,))
+    return load_model(os.path.join(cache_dir, name))
 
 
-def load_decoder(cache_dir: str = DEFAULT_CACHE):
-    """Load the decoder (DecoderTransformer), downloading if needed."""
-    ensure_weights(cache_dir, models=("decoder",))
-    return load_model(os.path.join(cache_dir, "decoder"))
+def load_decoder(cache_dir: str = DEFAULT_CACHE, name: str = "decoder"):
+    """Load a decoder (DecoderTransformer), downloading if needed."""
+    ensure_weights(cache_dir, models=(name,))
+    return load_model(os.path.join(cache_dir, name))
 
 
-def load_encoder(cache_dir: str = DEFAULT_CACHE):
-    """Load the encoder (EncoderTransformer), downloading if needed."""
-    ensure_weights(cache_dir, models=("encoder",))
-    return load_model(os.path.join(cache_dir, "encoder"))
+def load_encoder(cache_dir: str = DEFAULT_CACHE, name: str = "encoder"):
+    """Load an encoder (EncoderTransformer), downloading if needed."""
+    ensure_weights(cache_dir, models=(name,))
+    return load_model(os.path.join(cache_dir, name))

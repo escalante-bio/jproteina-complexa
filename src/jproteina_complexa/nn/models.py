@@ -19,7 +19,7 @@ from jproteina_complexa.nn.features import (
     DecoderSeqFeatures, DecoderPairFeatures,
     DenoiserSeqFeatures, DenoiserCondFeatures,
     DenoiserPairFeatures, DenoiserPairCondFeatures,
-    PairReprBuilder, TargetConcatFeatures,
+    PairReprBuilder, TargetConcatFeatures, MotifConcatFeatures,
     bin_and_one_hot, relative_seq_sep,
 )
 
@@ -131,7 +131,7 @@ class LocalLatentsTransformer(eqx.Module):
     local_latents_linear: Sequential
     ca_linear: Sequential
 
-    concat_features: TargetConcatFeatures | None = None
+    concat_features: TargetConcatFeatures | MotifConcatFeatures | None = None
     concat_pair_linear: eqx.Module | None = None
     concat_pair_ln: eqx.Module | None = None
 
@@ -155,22 +155,38 @@ class LocalLatentsTransformer(eqx.Module):
         concat = None
         cpair_linear = None
         cpair_ln = None
+        # Detect motif vs target conditioning from the concat factory's flags.
+        is_motif = use_concat and getattr(pt.concat_factory, "enable_motif", False)
         if use_concat and pt.concat_factory is not None:
-            concat = TargetConcatFeatures(
-                linear=from_torch(pt.concat_factory.linear_out),
-                ln=from_torch(pt.concat_factory.ln_out),
-            )
-        if use_advanced_pair and hasattr(pt, "concat_pair_factory"):
+            # Both share the `linear_out`/`ln_out` attribute names; ligand uses the
+            # separate `*_ligand` submodules, which the motif path ignores.
+            if is_motif:
+                concat = MotifConcatFeatures(
+                    linear=from_torch(pt.concat_factory.linear_out),
+                    ln=from_torch(pt.concat_factory.ln_out),
+                )
+            else:
+                concat = TargetConcatFeatures(
+                    linear=from_torch(pt.concat_factory.linear_out),
+                    ln=from_torch(pt.concat_factory.ln_out),
+                )
+        # The motif pair features are multiplied by zero upstream (USE_MOTIF_ZERO_FEATS),
+        # so the extended pair rep is just the original block zero-padded — exactly the
+        # non-advanced fallback in __call__. Skip the advanced pair path for motif.
+        if is_motif:
+            use_advanced_pair = False
+        elif use_advanced_pair and hasattr(pt, "concat_pair_factory"):
             cpair_linear = from_torch(pt.concat_pair_factory.linear_out)
             cpair_ln = from_torch(pt.concat_pair_factory.ln_out)
 
         return cls(
-            seq_features=DenoiserSeqFeatures(linear=from_torch(pt.init_repr_factory.linear_out)),
+            seq_features=DenoiserSeqFeatures(linear=from_torch(pt.init_repr_factory.linear_out), motif=is_motif),
             cond_features=DenoiserCondFeatures(linear=from_torch(pt.cond_factory.linear_out)),
             pair_repr_builder=PairReprBuilder(
                 pair_features=DenoiserPairFeatures(
                     linear=from_torch(prb_pt.init_repr_factory.linear_out),
                     ln=from_torch(prb_pt.init_repr_factory.ln_out),
+                    motif=is_motif,
                 ),
                 pair_cond=pair_cond,
                 adaln=adaln,
