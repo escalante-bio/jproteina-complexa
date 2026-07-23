@@ -1,0 +1,14 @@
+jproteina-complexa is derived from
+https://github.com/NVIDIA-Digital-Bio/Proteina-Complexa under multiple licenses.
+
+Licenses for the constituent components are in the licenses/ directory:
+  - licenses/license_code.txt        source code: Apache License 2.0
+  - licenses/license_weights.txt     model weights: NVIDIA Open Model License
+  - licenses/license_datasets.txt    datasets: CC BY 4.0
+  - licenses/license_third_party.txt third-party dependencies
+
+We redistribute model weights converted from NVIDIA's Proteina-Complexa
+checkpoints. Those weights are governed by the NVIDIA Open Model License
+(licenses/license_weights.txt) and require stating:
+
+    Licensed by NVIDIA Corporation under the NVIDIA Open Model License
